@@ -7,7 +7,7 @@
 | CODEOWNERS | Requests review from the repository owner on contributed changes. | None |
 | Ruff and pre-commit | `uv run --locked pre-commit run --all-files` | None |
 | CodeQL | GitHub default setup | None |
-| Dependabot | Weekly uv, Actions, and Docker updates; alerts and security updates | None |
+| Dependabot | Weekly uv, Actions, and Docker updates; Actions updates are grouped. PR titles use Conventional Commit prefixes. Only Python development dependency patch updates auto-merge after required checks pass. | None |
 | Codecov | CI uploads coverage using GitHub OIDC. | Connect this repository to Codecov. |
 | OpenSSF Scorecard | Weekly and main-branch scans publish SARIF. | None |
 | Release Please | Conventional commits generate release PRs and GitHub releases. | GitHub Actions may create PRs. A maintainer selects **Approve workflows to run** on each release PR so its required CI checks start. |
