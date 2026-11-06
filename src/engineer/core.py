@@ -88,10 +88,18 @@ def _record(db: sqlite3.Connection, run_id: str, status: str, result: dict | Non
 
 
 def run_task(
-    *, task: str, repo: Path, model: str, base_url: str, worker: list[str],
-    checks: list[str], state_dir: Path, worker_timeout: int = 1800,
+    *,
+    task: str,
+    repo: Path,
+    model: str,
+    base_url: str,
+    worker: list[str],
+    checks: list[str],
+    state_dir: Path,
+    worker_timeout: int = 1800,
     check_timeout: int = 300,
 ) -> dict:
+    """Execute a task in a clean worktree and record worker and check outcomes."""
     if not worker:
         raise ValueError("A coding worker command is required")
     repo = Path(git(repo, "rev-parse", "--show-toplevel"))
@@ -108,8 +116,18 @@ def run_task(
         git(repo, "worktree", "add", "-b", branch, str(worktree), base_sha)
         db.execute(
             "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (run_id, int(time.time()), str(repo), base_sha, branch, str(worktree),
-             "running", task, json.dumps(asdict(plan)), None),
+            (
+                run_id,
+                int(time.time()),
+                str(repo),
+                base_sha,
+                branch,
+                str(worktree),
+                "running",
+                task,
+                json.dumps(asdict(plan)),
+                None,
+            ),
         )
         db.commit()
         prompt = (
@@ -122,11 +140,19 @@ def run_task(
         # The last argument is the prompt. An adapter can translate this contract for any CLI.
         try:
             completed = subprocess.run(
-                [*worker, prompt], cwd=worktree, capture_output=True, text=True,
-                timeout=worker_timeout, env={**os.environ, "ENGINEER_RUN_ID": run_id},
+                [*worker, prompt],
+                check=False,
+                cwd=worktree,
+                capture_output=True,
+                text=True,
+                timeout=worker_timeout,
+                env={**os.environ, "ENGINEER_RUN_ID": run_id},
             )
-            worker_result = {"exit_code": completed.returncode,
-                             "stdout": completed.stdout[-50000:], "stderr": completed.stderr[-50000:]}
+            worker_result = {
+                "exit_code": completed.returncode,
+                "stdout": completed.stdout[-50000:],
+                "stderr": completed.stderr[-50000:],
+            }
         except subprocess.TimeoutExpired as exc:
             worker_result = {"exit_code": None, "stdout": "", "stderr": str(exc)}
         check_results = []
@@ -137,25 +163,49 @@ def run_task(
                     raise ValueError("Empty check command")
                 try:
                     completed = subprocess.run(
-                        argv, cwd=worktree, capture_output=True, text=True,
+                        argv,
+                        check=False,
+                        cwd=worktree,
+                        capture_output=True,
+                        text=True,
                         timeout=check_timeout,
                     )
-                    item = {"command": check, "exit_code": completed.returncode,
-                            "stdout": completed.stdout[-20000:], "stderr": completed.stderr[-20000:]}
+                    item = {
+                        "command": check,
+                        "exit_code": completed.returncode,
+                        "stdout": completed.stdout[-20000:],
+                        "stderr": completed.stderr[-20000:],
+                    }
                 except subprocess.TimeoutExpired as exc:
-                    item = {"command": check, "exit_code": None, "stdout": "", "stderr": str(exc)}
+                    item = {
+                        "command": check,
+                        "exit_code": None,
+                        "stdout": "",
+                        "stderr": str(exc),
+                    }
                 check_results.append(item)
                 if item["exit_code"] != 0:
                     break
         diff = git(worktree, "status", "--short")
-        result = {"id": run_id, "branch": branch, "worktree": str(worktree),
-                  "base_sha": base_sha, "plan": asdict(plan), "worker": worker_result,
-                  "checks": check_results, "changed_files": diff.splitlines()}
-        status = "ready_for_review" if (
-            worker_result["exit_code"] == 0
-            and all(item["exit_code"] == 0 for item in check_results)
-            and bool(diff)
-        ) else "needs_review"
+        result = {
+            "id": run_id,
+            "branch": branch,
+            "worktree": str(worktree),
+            "base_sha": base_sha,
+            "plan": asdict(plan),
+            "worker": worker_result,
+            "checks": check_results,
+            "changed_files": diff.splitlines(),
+        }
+        status = (
+            "ready_for_review"
+            if (
+                worker_result["exit_code"] == 0
+                and all(item["exit_code"] == 0 for item in check_results)
+                and bool(diff)
+            )
+            else "needs_review"
+        )
         result["status"] = status
         _record(db, run_id, status, result)
         return result

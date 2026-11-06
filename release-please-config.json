@@ -1,0 +1,15 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "python",
+      "package-name": "engineering-orchestrator",
+      "extra-files": [
+        {
+          "path": "uv.lock",
+          "type": "toml",
+          "jsonpath": "$.package[?(@.name.value=='engineering-orchestrator')].version"
+        }
+      ]
+    }
+  }
+}

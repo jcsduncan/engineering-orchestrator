@@ -1,36 +1,69 @@
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import shlex
+import sys
 from pathlib import Path
+
+import fire
 
 from .core import plan_task, run_task
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Local-model engineering task controller")
-    parser.add_argument("task", help="Task description")
-    parser.add_argument("--repo", type=Path, default=Path.cwd())
-    parser.add_argument("--model", default=os.getenv("ENGINEER_MODEL"))
-    parser.add_argument("--base-url", default=os.getenv("ENGINEER_BASE_URL", "http://127.0.0.1:11434/v1"))
-    parser.add_argument("--worker", help="Coding CLI prefix, for example 'qwen --approval-mode auto -p'")
-    parser.add_argument("--check", action="append", default=[], help="Validation command; repeat as needed")
-    parser.add_argument("--state-dir", type=Path,
-                        default=Path.home() / ".local/share/engineering-orchestrator")
-    parser.add_argument("--worker-timeout", type=int, default=1800)
-    args = parser.parse_args()
-    if not args.model:
-        parser.error("Set --model or ENGINEER_MODEL")
-    if args.worker:
-        result = run_task(task=args.task, repo=args.repo, model=args.model,
-                          base_url=args.base_url, worker=shlex.split(args.worker),
-                          checks=args.check, state_dir=args.state_dir,
-                          worker_timeout=args.worker_timeout)
+def run(
+    task: str,
+    repo: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    worker: str | None = None,
+    check: str | list[str] | None = None,
+    state_dir: str | None = None,
+    worker_timeout: int = 1800,
+) -> None:
+    """Plan a task locally, or execute it with a coding worker and validation commands.
+
+    Pass multiple checks as a list, for example --check='["ruff check .", "pytest -q"]'.
+    """
+    model = model or os.getenv("ENGINEER_MODEL")
+    if not model:
+        raise SystemExit("Set --model or ENGINEER_MODEL")
+    base_url = base_url or os.getenv("ENGINEER_BASE_URL", "http://127.0.0.1:11434/v1")
+    if worker:
+        if check is None:
+            checks = []
+        elif isinstance(check, str):
+            checks = [check]
+        elif isinstance(check, list) and all(isinstance(item, str) for item in check):
+            checks = check
+        else:
+            raise SystemExit("--check must be a command or a list of commands")
+        result = run_task(
+            task=task,
+            repo=Path(repo) if repo else Path.cwd(),
+            model=model,
+            base_url=base_url,
+            worker=shlex.split(worker),
+            checks=checks,
+            state_dir=Path(state_dir)
+            if state_dir
+            else Path.home() / ".local/share/engineering-orchestrator",
+            worker_timeout=worker_timeout,
+        )
         print(json.dumps(result, indent=2))
     else:
-        print(json.dumps(plan_task(args.task, args.model, args.base_url).__dict__, indent=2))
+        print(json.dumps(plan_task(task, model, base_url).__dict__, indent=2))
+
+
+def main() -> None:
+    """Expose the task command without silently dropping repeated validation flags."""
+    check_flags = sum(
+        arg.startswith("-") and arg.lstrip("-").split("=", 1)[0] in {"c", "check"}
+        for arg in sys.argv[1:]
+    )
+    if check_flags > 1:
+        raise SystemExit('Pass multiple checks as one list: --check=\'["cmd1", "cmd2"]\'')
+    fire.Fire(run, name="engineer")
 
 
 if __name__ == "__main__":
