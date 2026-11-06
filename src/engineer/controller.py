@@ -263,6 +263,17 @@ def finalize_claims(settings: ControllerSettings, queue: RunQueue, claims: Issue
             claims.acknowledge_cancel(item.run_id)
 
 
+def verify_queue_scope(settings: ControllerSettings, queue: RunQueue) -> None:
+    """Leave queued work untouched if this controller does not own its repository."""
+    rows = queue.db.execute(
+        "SELECT run_id FROM scheduled_runs WHERE status IN ('queued', 'running') "
+        "OR resource_held = 1"
+    ).fetchall()
+    for row in rows:
+        item = queue.get(row["run_id"])
+        settings.target_for(item.snapshot)
+
+
 def run_pass(
     settings: ControllerSettings,
     *,
@@ -280,6 +291,7 @@ def run_pass(
     try:
         finalize_claims(settings, queue, claims)
         transfer_claims(settings, queue, claims)
+        verify_queue_scope(settings, queue)
         stop = threading.Event()
         producer_errors: list[Exception] = []
 

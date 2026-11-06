@@ -236,6 +236,24 @@ def test_revocation_before_handoff_never_starts_a_worker(tmp_path: Path) -> None
         claims.close()
 
 
+def test_controller_leaves_other_repository_queue_untouched(tmp_path: Path) -> None:
+    owned, foreign = target(tmp_path, 10), target(tmp_path, 20)
+    config = settings(tmp_path, owned)
+    database = config.state_dir / "runs.sqlite3"
+    claims = IssueClaimStore(database)
+    queue = RunQueue(database, max_running=2, max_per_repository=1)
+    try:
+        claim = claims.claim(snapshot("foreign", foreign))
+        queue.accept_claim(claim)
+        with pytest.raises(ValueError, match="outside configured"):
+            run_pass(config, execute_run=lambda **kwargs: pytest.fail("Worker started"))
+        assert queue.get("foreign").status == "queued"
+        assert claims.get("foreign").status == "claimed"
+    finally:
+        queue.close()
+        claims.close()
+
+
 def test_new_claim_runs_while_another_repository_is_active(tmp_path: Path) -> None:
     first, second = target(tmp_path, 10), target(tmp_path, 20)
     config = settings(tmp_path, first, second)
