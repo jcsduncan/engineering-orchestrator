@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+import hashlib
+import os
+import shlex
+import stat
+import subprocess
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TypedDict
+
+
+class CheckResult(TypedDict):
+    command: str
+    argv: list[str]
+    started_at: str
+    duration_seconds: float
+    exit_code: int | None
+    status: str
+    stdout: str
+    stderr: str
+
+
+@dataclass(frozen=True)
+class ValidationEvidence:
+    checks: list[CheckResult]
+    diff_sha256_before: str
+    diff_sha256_after: str
+    status: str
+
+
+def _git_bytes(repo: Path, *args: str) -> bytes:
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=True).stdout
+
+
+def _update_chunk(digest, value: bytes) -> None:
+    digest.update(len(value).to_bytes(8, "big"))
+    digest.update(value)
+
+
+def diff_sha256(worktree: Path) -> str:
+    """Hash tracked worktree/index changes and untracked files without mutating Git state."""
+    digest = hashlib.sha256()
+    for args in (
+        ("diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD"),
+        ("diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD"),
+    ):
+        _update_chunk(digest, _git_bytes(worktree, *args))
+
+    paths = _git_bytes(worktree, "ls-files", "--others", "--exclude-standard", "-z")
+    for raw_path in sorted(path for path in paths.split(b"\0") if path):
+        path = worktree / os.fsdecode(raw_path)
+        mode = path.lstat().st_mode
+        _update_chunk(digest, raw_path)
+        _update_chunk(digest, str(stat.S_IMODE(mode)).encode())
+        if stat.S_ISLNK(mode):
+            _update_chunk(digest, os.fsencode(os.readlink(path)))
+        elif stat.S_ISREG(mode):
+            with path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    _update_chunk(digest, chunk)
+        else:
+            raise ValueError(f"Unsupported untracked file type: {raw_path!r}")
+    return digest.hexdigest()
+
+
+def validate_worktree(worktree: Path, checks: list[str], timeout: int) -> ValidationEvidence:
+    """Run checks in order and bind their results to the final worktree diff."""
+    results = []
+    before = diff_sha256(worktree)
+    for check in checks:
+        argv = shlex.split(check)
+        if not argv:
+            raise ValueError("Empty check command")
+        started_at = datetime.now(UTC).isoformat()
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(
+                argv,
+                check=False,
+                cwd=worktree,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            exit_code = completed.returncode
+            stdout = completed.stdout[-20000:]
+            stderr = completed.stderr[-20000:]
+            status = "passed" if exit_code == 0 else "failed"
+        except subprocess.TimeoutExpired:
+            exit_code = None
+            stdout = ""
+            stderr = f"Check timed out after {timeout} seconds"
+            status = "timed_out"
+        except OSError as exc:
+            exit_code = None
+            stdout = ""
+            stderr = str(exc)[-20000:]
+            status = "error"
+        results.append(
+            {
+                "command": check,
+                "argv": argv,
+                "started_at": started_at,
+                "duration_seconds": time.monotonic() - started,
+                "exit_code": exit_code,
+                "status": status,
+                "stdout": stdout,
+                "stderr": stderr,
+            }
+        )
+        if status != "passed":
+            break
+    after = diff_sha256(worktree)
+    if before != after:
+        status = "invalidated"
+    elif not results:
+        status = "not_run"
+    elif all(result["status"] == "passed" for result in results):
+        status = "passed"
+    else:
+        status = "failed"
+    return ValidationEvidence(results, before, after, status)

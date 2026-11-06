@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 import sqlite3
 import subprocess
 import time
@@ -19,6 +18,7 @@ from .providers import (
     WorkerResult,
     plan_task,
 )
+from .validation import validate_worktree
 
 __all__ = ["Plan", "plan_task", "run_task", "execute_task"]
 
@@ -157,37 +157,10 @@ def execute_task(
         ):
             raise ValueError("Worker provider returned an invalid WorkerResult")
         worker_result = asdict(outcome)
-        check_results = []
-        if worker_result["exit_code"] == 0:
-            for check in checks:
-                argv = shlex.split(check)
-                if not argv:
-                    raise ValueError("Empty check command")
-                try:
-                    completed = subprocess.run(
-                        argv,
-                        check=False,
-                        cwd=worktree,
-                        capture_output=True,
-                        text=True,
-                        timeout=check_timeout,
-                    )
-                    item = {
-                        "command": check,
-                        "exit_code": completed.returncode,
-                        "stdout": completed.stdout[-20000:],
-                        "stderr": completed.stderr[-20000:],
-                    }
-                except subprocess.TimeoutExpired as exc:
-                    item = {
-                        "command": check,
-                        "exit_code": None,
-                        "stdout": "",
-                        "stderr": str(exc),
-                    }
-                check_results.append(item)
-                if item["exit_code"] != 0:
-                    break
+        validation = validate_worktree(
+            worktree, checks if worker_result["exit_code"] == 0 else [], check_timeout
+        )
+        check_results = validation.checks
         diff = git(worktree, "status", "--short")
         result = {
             "id": run_id,
@@ -198,15 +171,16 @@ def execute_task(
             "providers": providers,
             "worker": worker_result,
             "checks": check_results,
+            "validation": {
+                "diff_sha256_before": validation.diff_sha256_before,
+                "diff_sha256_after": validation.diff_sha256_after,
+                "status": validation.status,
+            },
             "changed_files": diff.splitlines(),
         }
         status = (
             "ready_for_review"
-            if (
-                worker_result["exit_code"] == 0
-                and all(item["exit_code"] == 0 for item in check_results)
-                and bool(diff)
-            )
+            if (worker_result["exit_code"] == 0 and validation.status == "passed" and bool(diff))
             else "needs_review"
         )
         result["status"] = status

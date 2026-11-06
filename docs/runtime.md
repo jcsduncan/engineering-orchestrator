@@ -18,7 +18,7 @@ For multiple validation commands, use `--check='["ruff check .", "pytest -q"]'`.
 
 The repository must be clean. The controller pins `HEAD`, creates `agent/<run-id>`, and leaves the worktree in place. The worker and checks run as argument vectors, without a shell. Checks run only if the worker exits successfully and stop at the first failure. Each check has a 300-second deadline.
 
-SQLite stores the task, base SHA, branch, worktree, plan, status, and result. Worker output is limited to the last 50,000 characters per stream; check output to the last 20,000. `ready_for_review` means the worker exited successfully, all supplied checks passed, and the worktree has changes. With no `--check`, this status does not imply tests ran. `needs_review` covers other completed runs. `failed` records controller exceptions.
+SQLite stores the task, base SHA, branch, worktree, plan, status, and result. Worker output is limited to the last 50,000 characters per stream; check output to the last 20,000. Each check result records argv, start time, duration, exit code, status, and bounded output. Validation records SHA-256 hashes of tracked and untracked changes before and after checks. A changed hash invalidates validation. `ready_for_review` requires a successful worker, a nonempty diff, at least one passing check, and matching hashes. The operator chooses checks relevant to the task. `needs_review` covers other completed runs, including runs without checks. `failed` records controller exceptions.
 
 The CLI invokes the worker on the host. Worktrees separate files but do not isolate processes, network access, or credentials. The CLI does not publish changes or create pull requests.
 
