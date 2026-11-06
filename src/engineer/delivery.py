@@ -17,7 +17,7 @@ from .state import RunStore
 
 DELIVERABLE = {"ready_for_review", "report_for_review", "inconclusive"}
 REPORTS = {"report_for_review", "inconclusive"}
-TERMINAL = {"published", "report_ready"}
+TERMINAL = {"published", "report_ready", "suppressed"}
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,7 @@ class RunDeliveryStore:
                     run_id TEXT PRIMARY KEY,
                     run_status TEXT NOT NULL,
                     status TEXT NOT NULL CHECK (status IN
-                        ('attempting', 'failed', 'published', 'report_ready')),
+                        ('attempting', 'failed', 'published', 'report_ready', 'suppressed')),
                     attempts INTEGER NOT NULL,
                     stage TEXT NOT NULL,
                     pull_url TEXT,
@@ -99,7 +99,9 @@ class RunDeliveryStore:
                 (stage, int(time.time()), run_id),
             )
 
-    def finished(self, run_id: str, status: str, pull_url: str | None = None) -> DeliveryResult:
+    def finished(
+        self, run_id: str, status: str, pull_url: str | None = None, reason: str | None = None
+    ) -> DeliveryResult:
         """Mark a delivery complete only after its artifact has been persisted."""
         if status not in TERMINAL or (status == "published") != (pull_url is not None):
             raise ValueError("Invalid terminal delivery artifact")
@@ -115,8 +117,8 @@ class RunDeliveryStore:
                 raise ValueError("Delivery terminal artifact conflicts with recorded run")
             self.db.execute(
                 """UPDATE run_deliveries SET status = ?, stage = 'done', pull_url = ?,
-                error = NULL, updated_at = ? WHERE run_id = ?""",
-                (status, pull_url, int(time.time()), run_id),
+                error = ?, updated_at = ? WHERE run_id = ?""",
+                (status, pull_url, reason, int(time.time()), run_id),
             )
         return self.get(run_id)
 
@@ -163,19 +165,19 @@ def _run_record(state_dir: Path, queue: RunQueue, run_id: str) -> tuple[dict, Ta
     return record, claim.snapshot
 
 
-def _publication_started(state_dir: Path, run_id: str) -> bool:
-    """Detect a committed or in-flight publication after a restart."""
+def _publication_state(state_dir: Path, run_id: str) -> dict | None:
+    """Find a committed or in-flight publication after a restart."""
     runs = RunStore(state_dir / "runs.sqlite3")
     try:
         row = runs.db.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'run_publications'"
         ).fetchone()
         if row is None:
-            return False
-        return (
-            runs.db.execute("SELECT 1 FROM run_publications WHERE run_id = ?", (run_id,)).fetchone()
-            is not None
-        )
+            return None
+        publication = runs.db.execute(
+            "SELECT pull_url FROM run_publications WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return dict(publication) if publication is not None else None
     finally:
         runs.close()
 
@@ -223,9 +225,12 @@ def deliver_run(
             stage = "review"
             deliveries.stage(run_id, stage)
             diff_sha = record["result"]["validation"]["diff_sha256_after"]
-            if not _publication_started(state_dir, run_id):
+            publication_state = _publication_state(state_dir, run_id)
+            if publication_state is None:
                 review_run(state_dir, run_id, reviewer)
             _persisted_review(state_dir, run_id, diff_sha)
+            if publication_state is not None and publication_state["pull_url"]:
+                return deliveries.finished(run_id, "published", publication_state["pull_url"])
             stage = "publication"
             deliveries.stage(run_id, stage)
             issue = PublicationIssue(
@@ -237,11 +242,20 @@ def deliver_run(
                 issue_number=snapshot.issue_number,
                 title=snapshot.title,
             )
+            remote = remote_factory(snapshot)
+            if not remote.issue_eligible(issue):
+                return deliveries.finished(
+                    run_id,
+                    "suppressed",
+                    reason=(
+                        "Issue is closed or no longer labelled agent:run; inspect any prior branch"
+                    ),
+                )
             publication = publish_run(
                 state_dir=state_dir,
                 issue=issue,
                 title=_title(snapshot.title),
-                remote=remote_factory(snapshot),
+                remote=remote,
                 require_review=True,
             )
             return deliveries.finished(run_id, "published", publication.pull_url)

@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from engineer import delivery_cli
 
 
@@ -35,3 +37,11 @@ def test_report_only_pass_never_reads_publication_token(tmp_path, monkeypatch, c
     monkeypatch.setattr(delivery_cli, "deliver_finalized", fake_deliver)
     delivery_cli.run(state_dir=str(tmp_path), review_model="local")
     assert json.loads(capsys.readouterr().out) == []
+
+
+def test_rejects_token_file_inside_worker_worktree(tmp_path):
+    token_file = tmp_path / "worktrees" / "issue-1" / "token"
+    token_file.parent.mkdir(parents=True)
+    token_file.write_text("secret")
+    with pytest.raises(ValueError, match="outside worker worktrees"):
+        delivery_cli.run(state_dir=str(tmp_path), review_model="local", token_file=str(token_file))

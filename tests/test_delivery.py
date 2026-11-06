@@ -13,7 +13,7 @@ from engineer.core import execute_task
 from engineer.delivery import RunDeliveryStore, deliver_finalized, deliver_run
 from engineer.intake import IssueClaim, IssueClaimStore, TaskSnapshot
 from engineer.providers import Plan, ProviderInfo, WorkerResult
-from engineer.publication import PublicationIssue, publish_run
+from engineer.publication import GitHubPublicationRemote, PublicationIssue, publish_run
 from engineer.scheduler import QueuedRun, RunQueue
 
 
@@ -67,6 +67,10 @@ class Remote:
         self.pull = None
         self.creates = 0
         self.pushes = 0
+        self.eligible = True
+
+    def issue_eligible(self, _issue):
+        return self.eligible
 
     def verify_repository(self, issue, base_sha):
         assert issue.repository_id == 42
@@ -247,6 +251,68 @@ def test_retry_after_pr_creation_does_not_re_review_or_duplicate_pr(tmp_path, mo
     assert second.status == "published"
     assert reviewer.calls == 1
     assert remote.creates == remote.pushes == 1
+
+
+def test_issue_opt_out_suppresses_publication_terminally(tmp_path):
+    state_dir, _, queue = make_run(tmp_path)
+    reviewer = Reviewer()
+    remote = Remote()
+    remote.eligible = False
+    first = deliver_run(state_dir, queue, "issue-1", reviewer, lambda _snapshot: remote)
+    assert first.status == "suppressed"
+    assert "no longer labelled" in first.error
+    assert remote.creates == remote.pushes == 0
+    remote.eligible = True
+    assert deliver_run(state_dir, queue, "issue-1", reviewer, lambda _snapshot: remote) == first
+    assert reviewer.calls == 1
+    assert remote.creates == remote.pushes == 0
+
+
+def test_existing_pr_is_recorded_after_issue_closes(tmp_path, monkeypatch):
+    state_dir, _, queue = make_run(tmp_path)
+    remote = Remote()
+    reviewer = Reviewer()
+    original = RunDeliveryStore.finished
+    crashed = False
+
+    def crash_once(self, run_id, status, pull_url=None, reason=None):
+        nonlocal crashed
+        if status == "published" and not crashed:
+            crashed = True
+            raise RuntimeError("controller stopped before checkpoint")
+        return original(self, run_id, status, pull_url, reason)
+
+    monkeypatch.setattr(RunDeliveryStore, "finished", crash_once)
+    assert (
+        deliver_run(state_dir, queue, "issue-1", reviewer, lambda _snapshot: remote).status
+        == "failed"
+    )
+    remote.eligible = False
+    recovered = deliver_run(state_dir, queue, "issue-1", reviewer, lambda _snapshot: remote)
+    assert recovered.status == "published"
+    assert remote.creates == 1
+
+
+def test_github_issue_eligibility_checks_current_opt_in(monkeypatch):
+    issue = PublicationIssue("issue-1", 7, 42, "owner", "repo", 5, "Update README")
+    remote = GitHubPublicationRemote("secret")
+    data = {
+        "number": 5,
+        "html_url": "https://github.com/owner/repo/issues/5",
+        "state": "open",
+        "labels": [{"name": "agent:run"}],
+    }
+    monkeypatch.setattr(remote, "_request", lambda *_args: data)
+    assert remote.issue_eligible(issue)
+    data["labels"] = []
+    assert not remote.issue_eligible(issue)
+    data["labels"] = [{"name": "agent:run"}]
+    data["state"] = "closed"
+    assert not remote.issue_eligible(issue)
+    data["state"] = "open"
+    data["html_url"] = "https://github.com/other/repo/issues/5"
+    with pytest.raises(ValueError, match="Issue identity changed"):
+        remote.issue_eligible(issue)
 
 
 @pytest.mark.parametrize(

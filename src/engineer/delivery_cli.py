@@ -37,10 +37,14 @@ def run(
         int(review_timeout),
     )
     token_path = token_file or os.getenv("ENGINEER_GITHUB_TOKEN_FILE")
+    if token_path and Path(token_path).expanduser().resolve().is_relative_to(
+        (path / "worktrees").resolve()
+    ):
+        raise ValueError("GitHub token file must be outside worker worktrees")
 
     def publication_remote(_snapshot):
         token = (
-            Path(token_path).read_text().strip()
+            Path(token_path).expanduser().read_text().strip()
             if token_path
             else os.getenv("ENGINEER_GITHUB_TOKEN", "")
         )

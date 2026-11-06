@@ -17,7 +17,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from .core import _acquire_run_lock, _registered_git_dir, git
-from .intake import IssueClaimStore
+from .intake import RUN_LABEL, IssueClaimStore
 from .review import _review_table, _stored_review
 from .state import RunStore
 from .validation import diff_sha256
@@ -62,6 +62,8 @@ class Publication:
 
 
 class PublicationRemote(Protocol):
+    def issue_eligible(self, issue: PublicationIssue) -> bool: ...
+
     def verify_repository(self, issue: PublicationIssue, base_sha: str) -> str: ...
 
     def branch_sha(self, issue: PublicationIssue, branch: str) -> str | None: ...
@@ -107,6 +109,23 @@ class GitHubPublicationRemote:
     @staticmethod
     def _repo_path(issue: PublicationIssue) -> str:
         return f"/repos/{quote(issue.owner, safe='')}/{quote(issue.repository, safe='')}"
+
+    def issue_eligible(self, issue: PublicationIssue) -> bool:
+        """Check that the original issue still grants opt-in before a PR write."""
+        data = self._request("GET", f"{self._repo_path(issue)}/issues/{issue.issue_number}")
+        expected = (
+            f"https://github.com/{issue.owner}/{issue.repository}/issues/{issue.issue_number}"
+        )
+        if (
+            data["number"] != issue.issue_number
+            or data["html_url"].rstrip("/").casefold() != expected.casefold()
+        ):
+            raise ValueError("Issue identity changed before publication")
+        return (
+            data["state"] == "open"
+            and "pull_request" not in data
+            and any(label["name"] == RUN_LABEL for label in data["labels"])
+        )
 
     def verify_repository(self, issue: PublicationIssue, base_sha: str) -> str:
         scope = self._request("GET", "/installation/repositories?per_page=100")
