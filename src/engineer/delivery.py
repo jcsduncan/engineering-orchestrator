@@ -10,8 +10,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .intake import IssueClaimStore, TaskSnapshot
-from .publication import PublicationIssue, PublicationRemote, publish_run
-from .publication_cli import _title
+from .publication import PublicationIssue, PublicationRemote, publish_run, title_from_issue
 from .review import ReviewProvider, _review_table, _stored_review, review_run
 from .scheduler import RunQueue
 from .state import RunStore
@@ -271,7 +270,7 @@ def deliver_run(
             publication = publish_run(
                 state_dir=state_dir,
                 issue=issue,
-                title=_title(snapshot.title),
+                title=title_from_issue(snapshot.title),
                 remote=remote,
                 require_review=True,
             )
@@ -290,10 +289,21 @@ def deliver_finalized(
     queue: RunQueue,
     reviewer: ReviewProvider,
     remote_factory: Callable[[TaskSnapshot], DeliveryRemote],
+    *,
+    repository_key: tuple[int, int] | None = None,
 ) -> list[DeliveryResult]:
     """Reconcile all persisted completed outcomes in a repeatable pass."""
     results = []
     for queued in queue.finalized():
+        if (
+            repository_key is not None
+            and (
+                queued.snapshot.installation_id,
+                queued.snapshot.repository_id,
+            )
+            != repository_key
+        ):
+            continue
         if queued.status == "completed":
             try:
                 result = deliver_run(state_dir, queue, queued.run_id, reviewer, remote_factory)

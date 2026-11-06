@@ -212,6 +212,22 @@ def test_real_queue_finalized_contract(tmp_path):
         queue.close()
 
 
+def test_delivery_pass_filters_repository_before_review(tmp_path):
+    state_dir, _, queue = make_run(tmp_path)
+    reviewer = Reviewer()
+    assert (
+        deliver_finalized(
+            state_dir,
+            queue,
+            reviewer,
+            lambda _snapshot: pytest.fail("Wrong repository reached publication"),
+            repository_key=(7, 99),
+        )
+        == []
+    )
+    assert reviewer.calls == 0
+
+
 def test_retry_after_review_when_publication_credential_unavailable(tmp_path):
     state_dir, _, queue = make_run(tmp_path)
     reviewer = Reviewer()

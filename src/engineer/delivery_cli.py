@@ -16,6 +16,8 @@ from .scheduler import RunQueue
 
 
 def run(
+    installation_id: int,
+    repository_id: int,
     state_dir: str | None = None,
     review_model: str | None = None,
     review_base_url: str | None = None,
@@ -23,6 +25,8 @@ def run(
     token_file: str | None = None,
 ) -> None:
     """Review and publish completed issue runs; leave investigations as reports."""
+    if any(type(value) is not int or value <= 0 for value in (installation_id, repository_id)):
+        raise ValueError("Installation and repository IDs must be positive integers")
     path = (
         Path(state_dir).expanduser()
         if state_dir
@@ -54,7 +58,13 @@ def run(
 
     queue = RunQueue(path / "runs.sqlite3", max_running=1, max_per_repository=1)
     try:
-        outcomes = deliver_finalized(path, queue, reviewer, publication_remote)
+        outcomes = deliver_finalized(
+            path,
+            queue,
+            reviewer,
+            publication_remote,
+            repository_key=(installation_id, repository_id),
+        )
     finally:
         queue.close()
     print(json.dumps([asdict(outcome) for outcome in outcomes], indent=2))

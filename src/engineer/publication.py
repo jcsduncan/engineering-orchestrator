@@ -61,6 +61,19 @@ class Publication:
     pull_url: str
 
 
+def title_from_issue(issue_title: str) -> str:
+    """Render a concise conventional PR subject from a claimed issue title."""
+    summary = " ".join(issue_title.split())[:180]
+    if not summary:
+        raise ValueError("Claimed issue has no title")
+    if re.match(r"^(?:feat|fix|docs|refactor|perf|test|build|ci|chore): ", summary):
+        return summary
+    match = re.match(r"^(?:fix|repair|resolve)\s+(.+)$", summary, re.IGNORECASE)
+    if match:
+        return f"fix: {match.group(1)[0].lower()}{match.group(1)[1:]}"
+    return f"feat: {summary[0].lower()}{summary[1:]}"
+
+
 class PublicationRemote(Protocol):
     def verify_repository(self, issue: PublicationIssue, base_sha: str) -> str: ...
 
