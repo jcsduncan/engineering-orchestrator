@@ -1,0 +1,269 @@
+import json
+import sqlite3
+import subprocess
+import sys
+from io import BytesIO
+
+import pytest
+
+from engineer.core import execute_task
+from engineer.providers import Plan, ProviderInfo, WorkerResult
+from engineer.publication import GitHubPublicationRemote, PublicationIssue, publish_run
+
+
+def make_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    (repo / "README.md").write_text("before\n")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "initial"], check=True)
+    return repo
+
+
+class Planner:
+    info = ProviderInfo("test", {})
+
+    def plan(self, _task):
+        return Plan("Update README", ["Edit"], ["Check"], ["Unknown risk"])
+
+
+class Worker:
+    info = ProviderInfo("test", {})
+
+    def __init__(self, change=True):
+        self.change = change
+
+    def execute(self, _prompt, worktree, _run_id):
+        if self.change:
+            (worktree / "README.md").write_text("after\n")
+        return WorkerResult(0, "Done", "")
+
+
+class FakeRemote:
+    def __init__(self):
+        self.remote_sha = None
+        self.pull = None
+        self.pushes = 0
+        self.creates = 0
+        self.fail_create_once = False
+
+    def verify_repository(self, issue, base_sha):
+        assert issue.repository_id == 42
+        assert len(base_sha) == 40
+        return "main"
+
+    def branch_sha(self, _issue, _branch):
+        return self.remote_sha
+
+    def find_pull(self, _issue, _branch, _base):
+        return self.pull
+
+    def create_pull(self, issue, branch, base, title, body):
+        if self.fail_create_once:
+            self.fail_create_once = False
+            raise TimeoutError("PR request timed out")
+        self.creates += 1
+        assert base == "main"
+        assert title == "feat: update README"
+        assert f"Closes #{issue.issue_number}" in body
+        assert "Validated diff SHA-256" in body
+        assert "Unknown risk" in body
+        assert "Unverified work" in body
+        self.pull = {
+            "number": 12,
+            "html_url": "https://github.com/owner/repo/pull/12",
+            "head": {"sha": self.remote_sha, "ref": branch},
+            "body": body,
+        }
+        return self.pull
+
+    def push(self, _issue, worktree, _git_dir, _branch):
+        self.pushes += 1
+        self.remote_sha = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+
+def make_run(tmp_path, *, change=True, checks=True):
+    repo = make_repo(tmp_path)
+    state_dir = tmp_path / "state"
+    result = execute_task(
+        task="Update README",
+        repo=repo,
+        planner=Planner(),
+        worker=Worker(change),
+        checks=[f"{sys.executable} -c 'print(1)'"] if checks else [],
+        state_dir=state_dir,
+        run_id="publication-1",
+    )
+    issue = PublicationIssue("publication-1", 7, 42, "owner", "repo", 8, "Update README")
+    return result, issue, state_dir
+
+
+def test_publish_validated_run_and_replay(tmp_path):
+    result, issue, state_dir = make_run(tmp_path)
+    remote = FakeRemote()
+    first = publish_run(
+        state_dir=state_dir, issue=issue, title="feat: update README", remote=remote
+    )
+    second = publish_run(
+        state_dir=state_dir, issue=issue, title="feat: update README", remote=remote
+    )
+    assert first == second
+    assert first.branch == result["branch"]
+    assert remote.pushes == 1
+    assert remote.creates == 1
+    with sqlite3.connect(state_dir / "runs.sqlite3") as db:
+        row = db.execute(
+            "SELECT repository_id, issue_number, commit_sha, pull_number FROM run_publications"
+        ).fetchone()
+    assert row == (42, 8, first.commit_sha, 12)
+    status = subprocess.run(
+        ["git", "-C", result["worktree"], "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert status == ""
+
+
+@pytest.mark.parametrize(("change", "checks"), [(False, True), (True, False)])
+def test_rejects_unreviewable_run(tmp_path, change, checks):
+    _, issue, state_dir = make_run(tmp_path, change=change, checks=checks)
+    remote = FakeRemote()
+    with pytest.raises(ValueError, match="Only validated implementation runs"):
+        publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    assert remote.pushes == 0
+
+
+def test_rejects_modified_worktree_after_validation(tmp_path):
+    result, issue, state_dir = make_run(tmp_path)
+    (state_dir / "worktrees" / issue.run_id / "README.md").write_text("later\n")
+    with pytest.raises(ValueError, match="no longer matches validated diff"):
+        publish_run(
+            state_dir=state_dir, issue=issue, title="feat: update README", remote=FakeRemote()
+        )
+    assert result["status"] == "ready_for_review"
+
+
+def test_retry_after_pr_timeout_reuses_branch_and_commit(tmp_path):
+    _, issue, state_dir = make_run(tmp_path)
+    remote = FakeRemote()
+    remote.fail_create_once = True
+    with pytest.raises(TimeoutError, match="PR request timed out"):
+        publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    publication = publish_run(
+        state_dir=state_dir, issue=issue, title="feat: update README", remote=remote
+    )
+    assert publication.pull_number == 12
+    assert remote.pushes == 1
+    assert remote.creates == 1
+
+
+def test_rejects_remote_branch_with_different_commit(tmp_path):
+    _, issue, state_dir = make_run(tmp_path)
+    remote = FakeRemote()
+    remote.remote_sha = "f" * 40
+    with pytest.raises(ValueError, match="Remote run branch points to a different commit"):
+        publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    assert remote.creates == 0
+
+
+def test_rejects_issue_swap_on_retry(tmp_path):
+    _, issue, state_dir = make_run(tmp_path)
+    remote = FakeRemote()
+    publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    swapped = PublicationIssue("publication-1", 7, 42, "owner", "repo", 9, "Other")
+    with pytest.raises(ValueError, match="Recorded publication does not match run or issue"):
+        publish_run(state_dir=state_dir, issue=swapped, title="feat: update README", remote=remote)
+
+
+def test_rejects_investigation_run(tmp_path):
+    repo = make_repo(tmp_path)
+    state_dir = tmp_path / "state"
+
+    class ReportWorker(Worker):
+        def execute(self, _prompt, _worktree, _run_id):
+            report = {
+                "outcome": "inconclusive",
+                "summary": "Cause unknown",
+                "findings": [],
+                "commands": [],
+                "uncertainty": ["Need logs"],
+            }
+            return WorkerResult(0, "ENGINEERING_REPORT_JSON=" + json.dumps(report), "")
+
+    execute_task(
+        task="Investigate",
+        repo=repo,
+        planner=Planner(),
+        worker=ReportWorker(),
+        checks=[],
+        state_dir=state_dir,
+        run_id="publication-1",
+        mode="investigation",
+    )
+    issue = PublicationIssue("publication-1", 7, 42, "owner", "repo", 8, "Investigate")
+    with pytest.raises(ValueError, match="Only validated implementation runs"):
+        publish_run(
+            state_dir=state_dir, issue=issue, title="feat: update README", remote=FakeRemote()
+        )
+
+
+def test_github_remote_rejects_token_with_multiple_repositories(monkeypatch):
+    def fake_urlopen(request, timeout):
+        assert timeout == 20
+        assert request.get_header("Authorization") == "Bearer secret"
+        assert request.full_url.endswith("/installation/repositories?per_page=100")
+        return BytesIO(json.dumps({"total_count": 2, "repositories": []}).encode())
+
+    monkeypatch.setattr("engineer.publication.urlopen", fake_urlopen)
+    issue = PublicationIssue("publication-1", 7, 42, "owner", "repo", 8, "Update README")
+    with pytest.raises(ValueError, match="scoped to one repository"):
+        GitHubPublicationRemote("secret").verify_repository(issue, "a" * 40)
+
+
+def test_github_remote_verifies_claimed_repository_and_base(monkeypatch):
+    paths = []
+    responses = [
+        {"total_count": 1, "repositories": [{"id": 42, "full_name": "owner/repo"}]},
+        {"id": 42, "default_branch": "main"},
+        {"sha": "a" * 40},
+    ]
+
+    def fake_urlopen(request, timeout):
+        assert timeout == 20
+        paths.append(request.full_url)
+        return BytesIO(json.dumps(responses.pop(0)).encode())
+
+    monkeypatch.setattr("engineer.publication.urlopen", fake_urlopen)
+    issue = PublicationIssue("publication-1", 7, 42, "owner", "repo", 8, "Update README")
+    assert GitHubPublicationRemote("secret").verify_repository(issue, "a" * 40) == "main"
+    assert paths[-1].endswith("/repos/owner/repo/git/commits/" + "a" * 40)
+
+
+def test_git_push_keeps_token_out_of_command(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        assert "ENGINEER_GITHUB_TOKEN" in kwargs["env"]
+        assert "secret" not in " ".join(argv)
+        assert "secret" not in (tmp_path / "README.md").read_text()
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    (tmp_path / "README.md").write_text("public\n")
+    monkeypatch.setattr("engineer.publication.subprocess.run", fake_run)
+    issue = PublicationIssue("publication-1", 7, 42, "owner", "repo", 8, "Update README")
+    GitHubPublicationRemote("secret").push(
+        issue, tmp_path, tmp_path / ".git", "agent/publication-1"
+    )
+    assert captured["argv"][-1] == "HEAD:refs/heads/agent/publication-1"
+    assert captured["env"]["HOME"] != str(tmp_path)
