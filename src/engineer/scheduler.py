@@ -280,6 +280,7 @@ def run_queued(
                         status = result.get("status", "completed")
                         if status not in FINAL_STATUSES:
                             status = "completed"
+                        json.dumps(result)
                     except CancelledError:
                         status, result = "cancelled", {"reason": "Execution cancelled"}
                     except Exception as exc:

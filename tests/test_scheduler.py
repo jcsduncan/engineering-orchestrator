@@ -100,6 +100,28 @@ def test_runner_executes_independent_repositories_concurrently(tmp_path: Path) -
     queue.close()
 
 
+def test_unserializable_result_fails_one_run_without_losing_another(tmp_path: Path) -> None:
+    queue = RunQueue(tmp_path / "state.sqlite3", max_running=2, max_per_repository=1)
+    queue.enqueue(claim("bad", 1, 1))
+    queue.enqueue(claim("good", 2, 1))
+    barrier = threading.Barrier(2, timeout=2)
+
+    def execute(item, should_cancel):
+        barrier.wait()
+        if item.run_id == "bad":
+            return {"status": "completed", "unserializable": object()}
+        return {"status": "completed", "result": "saved"}
+
+    completed = run_queued(queue, execute, lock_path=tmp_path / "scheduler.lock")
+    assert {item.run_id: item.status for item in completed} == {
+        "bad": "failed",
+        "good": "completed",
+    }
+    assert "not JSON serializable" in queue.result("bad")["error"]
+    assert queue.result("good")["result"] == "saved"
+    queue.close()
+
+
 def test_cancellation_is_durable_and_preserves_partial_result(tmp_path: Path) -> None:
     path = tmp_path / "state.sqlite3"
     queue = RunQueue(path, max_running=1, max_per_repository=1)
