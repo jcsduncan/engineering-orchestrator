@@ -75,8 +75,11 @@ def test_cli_requires_model(monkeypatch):
         cli.run("Inspect code")
 
 
-def test_cli_rejects_repeated_check_flags(monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["engineer", "Fix test", "--check", "first", "--check=second"])
+@pytest.mark.parametrize("alias", ["--check", "--c", "-c", "-check"])
+def test_cli_rejects_repeated_check_flags(monkeypatch, alias):
+    monkeypatch.setattr(
+        sys, "argv", ["engineer", "Fix test", "--check", "first", f"{alias}=second"]
+    )
     monkeypatch.setattr(
         cli.fire, "Fire", lambda *_args, **_kwargs: pytest.fail("Fire must not run")
     )

@@ -58,7 +58,8 @@ def run(
 def main() -> None:
     """Expose the task command without silently dropping repeated validation flags."""
     check_flags = sum(
-        arg in {"--check", "-c"} or arg.startswith(("--check=", "-c=")) for arg in sys.argv[1:]
+        arg.startswith("-") and arg.lstrip("-").split("=", 1)[0] in {"c", "check"}
+        for arg in sys.argv[1:]
     )
     if check_flags > 1:
         raise SystemExit('Pass multiple checks as one list: --check=\'["cmd1", "cmd2"]\'')

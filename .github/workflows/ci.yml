@@ -68,7 +68,7 @@ jobs:
         with:
           name: coverage-py311
           path: coverage
-      - uses: codecov/codecov-action@f9fe539f5290016afa014f8ef31597d3a61c2dea # v7
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
           files: coverage/coverage.xml
           use_oidc: true
