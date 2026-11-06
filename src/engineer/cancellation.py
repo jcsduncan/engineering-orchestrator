@@ -30,7 +30,7 @@ class CancellationProbe:
     def __call__(self, run_id: str) -> str | None:
         if not self.database.exists():
             return None
-        with sqlite3.connect(self.database, timeout=1) as db:
+        with contextlib.closing(sqlite3.connect(self.database, timeout=1)) as db:
             row = db.execute("SELECT cancel_reason FROM runs WHERE id = ?", (run_id,)).fetchone()
         return row[0] if row is not None else None
 

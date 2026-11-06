@@ -182,6 +182,20 @@ def test_cli_retry_command_forwards_new_generation(monkeypatch):
     }
 
 
+def test_cli_cancel_accepts_literal_evaluated_reason(monkeypatch, capsys):
+    captured = {}
+
+    def fake_cancel(_state_dir, _run_id, reason):
+        captured["reason"] = reason
+        return {"status": "cancellation_requested"}
+
+    monkeypatch.setattr(cli, "cancel_run", fake_cancel)
+    monkeypatch.setattr(sys, "argv", ["engineer", "cancel", "run-1", "--reason", "123"])
+    cli.main()
+    assert captured["reason"] == "123"
+    assert json.loads(capsys.readouterr().out)["status"] == "cancellation_requested"
+
+
 @pytest.mark.parametrize("alias", ["--check", "--c", "-c", "-check"])
 def test_cli_rejects_repeated_check_flags(monkeypatch, alias):
     monkeypatch.setattr(

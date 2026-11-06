@@ -95,7 +95,7 @@ def status(run_id: str, state_dir: str | None = None) -> None:
 
 def cancel(run_id: str, reason: str, state_dir: str | None = None) -> None:
     """Stop an active run with a recorded reason."""
-    print(json.dumps(cancel_run(_state_dir(state_dir), str(run_id), reason), indent=2))
+    print(json.dumps(cancel_run(_state_dir(state_dir), str(run_id), str(reason)), indent=2))
 
 
 def retry(source_run_id: str, task: str, **options) -> None:
