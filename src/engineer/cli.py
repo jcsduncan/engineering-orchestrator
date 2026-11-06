@@ -8,6 +8,7 @@ from pathlib import Path
 
 import fire
 
+from .capabilities import WorkerProfile
 from .core import cancel_run, plan_task, run_task, status_run
 from .review import OpenAICompatibleReviewer, review_run
 
@@ -33,6 +34,8 @@ def run(
     container_network: str = "none",
     mode: str = "implementation",
     retry_of: str | None = None,
+    worker_mode: str = "single",
+    worker_profile: str | None = None,
 ) -> None:
     """Plan a task locally, or execute it with a coding worker and validation commands.
 
@@ -48,9 +51,18 @@ def run(
         raise SystemExit("--run-id requires --worker")
     if retry_of is not None and not worker:
         raise SystemExit("--retry-of requires --worker")
+    if worker_profile is not None and not worker:
+        raise SystemExit("--worker-profile requires --worker")
+    if worker_mode != "single" and not worker:
+        raise SystemExit("--worker-mode requires --worker")
     if run_id is not None:
         run_id = str(run_id)
     if worker:
+        profile = (
+            WorkerProfile.from_dict(json.loads(Path(worker_profile).read_text()))
+            if worker_profile
+            else None
+        )
         if check is None:
             checks = []
         elif isinstance(check, str):
@@ -78,6 +90,8 @@ def run(
             container_network=container_network,
             mode=mode,
             retry_of=retry_of,
+            worker_mode=worker_mode,
+            worker_profile=profile,
         )
         print(json.dumps(result, indent=2))
     else:

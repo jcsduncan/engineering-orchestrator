@@ -11,3 +11,4 @@ ADRs record constraints on implementation. Task plans live elsewhere.
 - [007: Worker-owned agent coordination](007-worker-owned-agent-coordination.md)
 - [008: Independent advisory review](008-independent-review.md)
 - [009: Claim-to-run controller](009-claim-to-run-controller.md)
+- [010: Version-bound worker capabilities](010-worker-capabilities.md)

@@ -3,12 +3,14 @@ import sqlite3
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 
 import pytest
 
+from engineer.capabilities import WorkerCapabilities, WorkerProfile, command_digest
 from engineer.core import execute_task, plan_task, run_task
 from engineer.providers import (
     CommandWorker,
@@ -483,6 +485,69 @@ def test_implementation_request_keeps_legacy_digest_shape(tmp_path):
         snapshot = json.loads(db.execute("SELECT snapshot_json FROM runs").fetchone()[0])
     assert "mode" not in snapshot
     assert execute_task(**kwargs) == first
+
+
+def test_worker_mode_and_profile_are_bound_to_run_identity(tmp_path, monkeypatch):
+    class Worker:
+        info = ProviderInfo("test", {})
+
+        def execute(self, prompt, _worktree, _run_id):
+            assert "runtime's subagents" in prompt
+            return WorkerResult(0, "No change", "")
+
+    selected = WorkerProfile(
+        "example-code",
+        "2.1.0",
+        "sha256:" + "a" * 64,
+        command_digest(("worker", "-p")),
+        "headless",
+        WorkerCapabilities("supported", "supported", "unverified", "unsupported", "supported"),
+        {
+            "non_interactive": "probe/single.json",
+            "subagents": "probe/subagents.json",
+            "tool_permissions": "probe/permissions.json",
+        },
+    )
+    state_dir = tmp_path / "state"
+    kwargs = {
+        "task": "Inspect",
+        "repo": make_repo(tmp_path),
+        "planner": InvestigationPlanner(),
+        "worker": Worker(),
+        "checks": [],
+        "state_dir": state_dir,
+        "run_id": "profiled-run",
+        "worker_mode": "subagents",
+        "worker_profile": selected,
+    }
+    result = execute_task(**kwargs)
+    assert result["worker_execution"]["mode"] == "subagents"
+    with sqlite3.connect(state_dir / "runs.sqlite3") as db:
+        snapshot = json.loads(db.execute("SELECT snapshot_json FROM runs").fetchone()[0])
+    assert snapshot["worker_execution"]["image_digest"] == selected.image_digest
+    assert execute_task(**kwargs) == result
+    with pytest.raises(ValueError, match="different task or configuration"):
+        execute_task(**{**kwargs, "worker_mode": "single"})
+    with pytest.raises(ValueError, match="different task or configuration"):
+        execute_task(**{**kwargs, "worker_profile": replace(selected, version="2.2.0")})
+
+    monkeypatch.setattr(
+        "engineer.core.ContainerRuntime.resolve_image",
+        lambda runtime: replace(runtime, image="sha256:" + "b" * 64),
+    )
+    with pytest.raises(ValueError, match="image does not match"):
+        run_task(
+            task="Inspect",
+            repo=kwargs["repo"],
+            model="local-test",
+            base_url="http://127.0.0.1:11434/v1",
+            worker=["worker", "-p"],
+            checks=[],
+            state_dir=state_dir,
+            execution_image="worker:local",
+            worker_mode="subagents",
+            worker_profile=selected,
+        )
 
 
 @pytest.mark.parametrize(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import subprocess
@@ -12,6 +11,7 @@ from typing import Protocol
 from urllib.parse import urlsplit
 
 from .cancellation import run_cancellable_command
+from .capabilities import command_digest
 
 
 @dataclass(frozen=True)
@@ -153,7 +153,7 @@ class CommandWorker:
 
     @property
     def info(self) -> ProviderInfo:
-        command_hash = hashlib.sha256("\0".join(self.command).encode()).hexdigest()
+        command_hash = command_digest(self.command)
         return ProviderInfo(
             "command",
             {

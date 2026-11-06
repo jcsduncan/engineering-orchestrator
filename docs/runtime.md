@@ -49,6 +49,32 @@ The CLI resolves the local image to its immutable ID, then runs the worker and c
 
 A worker command is one runtime invocation per engineering run. That runtime may manage internal agents, but it must return through the same worker result contract. The controller does not configure or resume those internal agents. Internal delegation depends on the selected runtime's support for the invocation mode; for example, [Claude Code Agent Teams](https://code.claude.com/docs/en/agent-teams) require an interactive session, while this CLI invokes workers noninteractively.
 
+`--worker-mode` selects `single` (default), `subagents`, or `agent_teams`. Explicit delegation requires `--worker-profile /path/to/profile.json`. The profile records runtime, version, immutable Docker image ID, SHA-256 of the NUL-separated worker argument vector, `headless` invocation, and `supported`, `unsupported`, or `unverified` for `non_interactive`, `subagents`, `agent_teams`, `persistent_sessions`, and `tool_permissions`. Every supported state needs a probe artifact reference in `evidence`. A profiled run requires supported noninteractive execution and tool permissions; delegation also requires its mode to be supported. The image ID and command must match the profile. The selected mode is sent to the worker as an instruction; the runtime remains responsible for its internal agents. The chosen mode and profile are stored with the run and cannot change on resume. An unprofiled command keeps the existing single-worker behavior.
+
+```json
+{
+  "runtime": "qwen-code",
+  "version": "example-version",
+  "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "command_sha256": "2956e3e3baf4ce5ecc74c1343a38bea4044cf9fd13539d5702b136e6d2440f3e",
+  "invocation": "headless",
+  "capabilities": {
+    "non_interactive": "supported",
+    "subagents": "supported",
+    "agent_teams": "unverified",
+    "persistent_sessions": "unsupported",
+    "tool_permissions": "supported"
+  },
+  "evidence": {
+    "non_interactive": "probes/single.json",
+    "subagents": "probes/subagents.json",
+    "tool_permissions": "probes/permissions.json"
+  }
+}
+```
+
+`engineer-controller` accepts the same object as `worker_profile` in its trusted JSON configuration, with `worker_mode` beside `worker` and `image`. It checks both before claim handoff. The task `--mode` (`implementation` or `investigation`) is independent of the worker execution mode.
+
 Each run records provider names and a sanitized configuration summary in `providers_json` and its result. The planner record includes model, endpoint origin, and timeout. The worker record includes executable name, command hash, and timeout. Existing SQLite run databases gain the new column on use.
 
 ## GitHub issue reconciliation

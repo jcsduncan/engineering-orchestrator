@@ -33,6 +33,8 @@ Planner and worker providers expose independent typed contracts. The controller 
 
 The controller schedules engineering runs, not individual agents inside a worker runtime. It supplies one task and worktree, then observes one bounded result. The runtime decides whether to use one agent or coordinate several. The controller retains the run's permissions, resource limits, cancellation, validation, state, and publication. Internal agent roles, messages, and task lists are not controller state.
 
+An optional, version-bound worker profile declares which headless execution modes a packaged image and command have demonstrated. The controller checks the requested mode, command, and image ID before claim handoff, then persists the selected profile with the run. Unsupported or unverified internal delegation cannot be selected. Legacy command workers use single-worker mode.
+
 ## GitHub issue intake
 
 An installed GitHub App observes only configured repositories. An open issue with the `agent:run` label is eligible; opening or editing an unlabelled issue does not start work. Webhook events prompt intake, and a periodic scan reconciles eligible issues after missed or out-of-order deliveries. Both paths use the same claim operation. Without a reachable HTTPS webhook endpoint, the scan is the sole trigger.

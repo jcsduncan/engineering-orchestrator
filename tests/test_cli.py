@@ -6,6 +6,7 @@ import fire
 import pytest
 
 from engineer import cli
+from engineer.capabilities import command_digest
 from engineer.core import Plan
 
 
@@ -77,6 +78,51 @@ def test_fire_accepts_numeric_run_id(monkeypatch, capsys):
     )
 
     assert captured["run_id"] == "12345"
+    assert json.loads(capsys.readouterr().out) == {"status": "needs_review"}
+
+
+def test_cli_loads_worker_profile_for_selected_mode(monkeypatch, capsys, tmp_path):
+    captured = {}
+
+    def fake_run_task(**kwargs):
+        captured.update(kwargs)
+        return {"status": "needs_review"}
+
+    profile_path = tmp_path / "worker-profile.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "runtime": "example-code",
+                "version": "2.1.0",
+                "image_digest": "sha256:" + "a" * 64,
+                "command_sha256": command_digest(("worker", "-p")),
+                "invocation": "headless",
+                "capabilities": {
+                    "non_interactive": "supported",
+                    "subagents": "supported",
+                    "agent_teams": "unverified",
+                    "persistent_sessions": "unsupported",
+                    "tool_permissions": "supported",
+                },
+                "evidence": {
+                    "non_interactive": "probe/single.json",
+                    "subagents": "probe/subagents.json",
+                    "tool_permissions": "probe/permissions.json",
+                },
+            }
+        )
+    )
+    monkeypatch.setattr(cli, "run_task", fake_run_task)
+    cli.run(
+        "Fix test",
+        model="local-test",
+        worker="worker -p",
+        image="test-image",
+        worker_mode="subagents",
+        worker_profile=str(profile_path),
+    )
+    assert captured["worker_mode"] == "subagents"
+    assert captured["worker_profile"].runtime == "example-code"
     assert json.loads(capsys.readouterr().out) == {"status": "needs_review"}
 
 

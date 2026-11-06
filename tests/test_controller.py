@@ -4,13 +4,14 @@ import json
 import subprocess
 import threading
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from engineer import controller_cli
+from engineer.capabilities import WorkerCapabilities, WorkerProfile, command_digest
 from engineer.controller import (
     ControllerSettings,
     RepositoryTarget,
@@ -60,6 +61,22 @@ def settings(tmp_path: Path, *targets: RepositoryTarget) -> ControllerSettings:
         max_running=2,
         max_per_repository=1,
         poll_interval=0.1,
+    )
+
+
+def worker_profile() -> WorkerProfile:
+    return WorkerProfile(
+        "example-code",
+        "2.1.0",
+        "sha256:" + "a" * 64,
+        command_digest(("worker", "-p")),
+        "headless",
+        WorkerCapabilities("supported", "supported", "unverified", "unsupported", "supported"),
+        {
+            "non_interactive": "probe/single.json",
+            "subagents": "probe/subagents.json",
+            "tool_permissions": "probe/permissions.json",
+        },
     )
 
 
@@ -123,6 +140,66 @@ def test_config_file_loads_argument_vectors_without_shell(tmp_path: Path) -> Non
     loaded = load_settings(config_path)
     assert loaded.worker == ("qwen", "-p")
     assert loaded.targets == (repo,)
+
+    payload = json.loads(config_path.read_text())
+    payload["worker"] = ["worker", "-p"]
+    payload["worker_mode"] = "subagents"
+    payload["worker_profile"] = asdict(worker_profile())
+    config_path.write_text(json.dumps(payload))
+    selected = load_settings(config_path)
+    assert selected.worker_mode == "subagents"
+    assert selected.worker_profile == worker_profile()
+
+
+def test_unsupported_mode_and_image_mismatch_preserve_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = target(tmp_path)
+    config = settings(tmp_path, repo)
+    with pytest.raises(ValueError, match="verified worker profile"):
+        replace(config, worker_mode="subagents")
+    with pytest.raises(ValueError, match="requires supported agent_teams"):
+        replace(config, worker_mode="agent_teams", worker_profile=worker_profile())
+    with pytest.raises(ValueError, match="command does not match"):
+        replace(config, worker_profile=worker_profile(), worker=("other", "-p"))
+
+    configured = replace(config, worker_mode="subagents", worker_profile=worker_profile())
+    claims = IssueClaimStore(configured.state_dir / "runs.sqlite3")
+    try:
+        claims.claim(snapshot("one", repo))
+
+        def mismatch(image, profile):
+            raise ValueError("Worker image does not match verified capability profile")
+
+        monkeypatch.setattr("engineer.controller.verify_worker_image", mismatch)
+        with pytest.raises(ValueError, match="image does not match"):
+            run_pass(configured, execute_run=lambda **kwargs: pytest.fail("Worker started"))
+        assert claims.pending_claims(1, 10)[0].snapshot.run_id == "one"
+    finally:
+        claims.close()
+
+
+def test_controller_passes_verified_mode_to_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = target(tmp_path)
+    selected = worker_profile()
+    config = replace(settings(tmp_path, repo), worker_mode="subagents", worker_profile=selected)
+    claims = IssueClaimStore(config.state_dir / "runs.sqlite3")
+    claims.claim(snapshot("one", repo))
+    monkeypatch.setattr("engineer.controller.verify_worker_image", lambda *_args: None)
+    calls = []
+
+    def execute(**kwargs):
+        calls.append(kwargs)
+        return {"status": "ready_for_review"}
+
+    try:
+        run_pass(config, execute_run=execute)
+        assert calls[0]["worker_mode"] == "subagents"
+        assert calls[0]["worker_profile"] == selected
+    finally:
+        claims.close()
 
 
 def test_dirty_checkout_is_rejected_before_claim_handoff(tmp_path: Path) -> None:

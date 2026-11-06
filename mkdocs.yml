@@ -22,3 +22,4 @@ nav:
       - Worker agent coordination: adr/007-worker-owned-agent-coordination.md
       - Independent review: adr/008-independent-review.md
       - Claim-to-run controller: adr/009-claim-to-run-controller.md
+      - Worker capabilities: adr/010-worker-capabilities.md

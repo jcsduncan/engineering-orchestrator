@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import subprocess
@@ -13,6 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .cancellation import RunCancelled
+from .capabilities import command_digest
 from .providers import ProviderInfo, WorkerResult
 
 _REMOVAL_WAIT_SECONDS = 10
@@ -303,7 +303,7 @@ class ContainerWorker:
 
     @property
     def info(self) -> ProviderInfo:
-        command_hash = hashlib.sha256("\0".join(self.command).encode()).hexdigest()
+        command_hash = command_digest(self.command)
         return ProviderInfo(
             "container-command",
             {
