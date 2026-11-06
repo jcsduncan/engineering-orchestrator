@@ -179,9 +179,11 @@ def run_suite(
     if not worker:
         raise ValueError("Benchmark worker command is required")
     known_ids = {case["id"] for case in cases}
+    intervention_values = interventions if interventions is not None else {}
+    cost_values = costs_usd if costs_usd is not None else {}
     for values, label, expected in (
-        (interventions or {}, "interventions", int),
-        (costs_usd or {}, "costs_usd", (int, float)),
+        (intervention_values, "interventions", int),
+        (cost_values, "costs_usd", (int, float)),
     ):
         if not isinstance(values, dict) or any(
             key not in known_ids
@@ -241,8 +243,8 @@ def run_suite(
             result,
             oracle_passed=oracle_result["passed"] if oracle_result else None,
             latency_seconds=latency,
-            interventions=(interventions or {}).get(case["id"]),
-            cost_usd=(costs_usd or {}).get(case["id"]),
+            interventions=intervention_values.get(case["id"]),
+            cost_usd=cost_values.get(case["id"]),
         )
         record = {
             "case": case["id"],
