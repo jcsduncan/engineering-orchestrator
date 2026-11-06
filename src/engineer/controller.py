@@ -14,6 +14,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
+from .capabilities import WorkerProfile, require_mode, verify_worker_image
 from .core import run_task
 from .intake import IssueClaimStore, RepositoryConfig, TaskSnapshot
 from .providers import OpenAICompatiblePlanner
@@ -84,6 +85,8 @@ class ControllerSettings:
     container_memory_mb: int = 2048
     container_pids: int = 128
     container_network: str = "none"
+    worker_mode: str = "single"
+    worker_profile: WorkerProfile | None = None
 
     def __post_init__(self) -> None:
         if not self.state_dir.is_absolute():
@@ -100,6 +103,9 @@ class ControllerSettings:
         OpenAICompatiblePlanner(self.model, self.base_url)
         if not self.worker or any(not isinstance(arg, str) or not arg for arg in self.worker):
             raise ValueError("Worker must be a nonempty argument vector")
+        require_mode(self.worker_mode, self.worker_profile)
+        if self.worker_profile is not None:
+            self.worker_profile.require_command(self.worker)
         if any(
             type(value) is not int or value <= 0
             for value in (
@@ -163,6 +169,12 @@ def load_settings(path: Path) -> ControllerSettings:
         base_url=payload["base_url"],
         worker=tuple(worker),
         image=payload["image"],
+        worker_mode=payload.get("worker_mode", "single"),
+        worker_profile=(
+            WorkerProfile.from_dict(payload["worker_profile"])
+            if "worker_profile" in payload
+            else None
+        ),
         max_running=payload.get("max_running", 2),
         max_per_repository=payload.get("max_per_repository", 1),
         poll_interval=payload.get("poll_interval", 1.0),
@@ -281,6 +293,8 @@ def run_pass(
 ) -> list[QueuedRun]:
     """Consume current claims while bounded runs execute; persist all outcomes."""
     verify_checkouts(settings)
+    if settings.worker_profile is not None:
+        verify_worker_image(settings.image, settings.worker_profile)
     database = settings.state_dir / "runs.sqlite3"
     queue = RunQueue(
         database,
@@ -338,13 +352,19 @@ def run_pass(
                 worker_timeout=settings.worker_timeout,
                 check_timeout=settings.check_timeout,
                 run_id=item.run_id,
-                execution_image=settings.image,
+                execution_image=(
+                    settings.worker_profile.image_digest
+                    if settings.worker_profile is not None
+                    else settings.image
+                ),
                 container_cpus=settings.container_cpus,
                 container_memory_mb=settings.container_memory_mb,
                 container_pids=settings.container_pids,
                 container_network=settings.container_network,
                 mode=target.mode,
                 external_cancel_reason=cancelled,
+                worker_mode=settings.worker_mode,
+                worker_profile=settings.worker_profile,
             )
             run_status = result.get("status")
             if run_status not in RUN_OUTCOMES:

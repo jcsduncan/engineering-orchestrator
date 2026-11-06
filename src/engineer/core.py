@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from .cancellation import CancellationProbe, RunCancelled
+from .capabilities import WorkerProfile, require_mode
 from .container import ContainerCheckRunner, ContainerRuntime, ContainerWorker
 from .providers import (
     CheckRunner,
@@ -326,8 +327,13 @@ def run_task(
     mode: str = "implementation",
     retry_of: str | None = None,
     external_cancel_reason: Callable[[str], str | None] | None = None,
+    worker_mode: str = "single",
+    worker_profile: WorkerProfile | None = None,
 ) -> dict:
     """Execute with the default planner and a host or container command worker."""
+    require_mode(worker_mode, worker_profile)
+    if worker_profile is not None:
+        worker_profile.require_command(worker)
     cancellation = CancellationProbe(
         state_dir.expanduser().resolve() / "runs.sqlite3", external_cancel_reason
     )
@@ -342,9 +348,13 @@ def run_task(
             network=container_network,
             cancel_reason=cancellation,
         ).resolve_image()
+        if worker_profile is not None and runtime.image != worker_profile.image_digest:
+            raise ValueError("Worker image does not match verified capability profile")
         worker_provider: WorkerProvider = ContainerWorker(runtime, tuple(worker), worker_timeout)
         check_runner: CheckRunner | None = ContainerCheckRunner(runtime)
     else:
+        if worker_profile is not None:
+            raise ValueError("A worker profile requires container execution")
         worker_provider = CommandWorker(tuple(worker), worker_timeout, cancellation)
         check_runner = None
     return execute_task(
@@ -360,6 +370,8 @@ def run_task(
         mode=mode,
         cancel_reason=cancellation,
         retry_of=retry_of,
+        worker_mode=worker_mode,
+        worker_profile=worker_profile,
     )
 
 
@@ -378,10 +390,13 @@ def execute_task(
     cancel_reason: CancellationProbe | None = None,
     retry_of: str | None = None,
     external_cancel_reason: Callable[[str], str | None] | None = None,
+    worker_mode: str = "single",
+    worker_profile: WorkerProfile | None = None,
 ) -> dict:
     """Execute or safely resume a task with independently selected providers."""
     if not isinstance(mode, str) or mode not in {"implementation", "investigation"}:
         raise ValueError("Mode must be implementation or investigation")
+    worker_execution = require_mode(worker_mode, worker_profile)
     repo = Path(git(repo, "rev-parse", "--show-toplevel"))
     state_dir = state_dir.expanduser().resolve()
     if external_cancel_reason is not None:
@@ -397,6 +412,15 @@ def execute_task(
     if type(check_timeout) is not int or check_timeout <= 0:
         raise ValueError("Check timeout must be positive")
     providers = _provider_metadata(planner, worker)
+    if worker_profile is not None:
+        bound = providers["worker"]
+        configuration = bound["configuration"]
+        if (
+            bound["name"] != "container-command"
+            or configuration.get("image") != worker_profile.image_digest
+            or configuration.get("command_sha256") != worker_profile.command_sha256
+        ):
+            raise ValueError("Worker provider does not match verified capability profile")
     request = {
         "task": task,
         "repo": str(repo),
@@ -404,6 +428,8 @@ def execute_task(
         "checks": checks,
         "check_timeout": check_timeout,
     }
+    if worker_profile is not None:
+        request["worker_execution"] = worker_execution
     if mode != "implementation":
         request["mode"] = mode
     request_digest = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
@@ -453,7 +479,12 @@ def execute_task(
                     worktree=worktree,
                     task=task,
                     mode=mode,
-                    snapshot={**request, "request_digest": request_digest, "base_sha": base_sha},
+                    snapshot={
+                        **request,
+                        "worker_execution": worker_execution,
+                        "request_digest": request_digest,
+                        "base_sha": base_sha,
+                    },
                     providers=providers,
                     parent_id=retry_of,
                     generation=generation,
@@ -541,6 +572,10 @@ def execute_task(
                 "solution is uncertain, report that clearly; do not invent a fix. "
                 "Do not commit, push, or open a pull request."
             )
+        if worker_mode == "subagents":
+            prompt += " Use the selected runtime's subagents for internal delegation as needed."
+        elif worker_mode == "agent_teams":
+            prompt += " Use the selected runtime's team coordination for internal work."
         outcome = worker.execute(prompt, worktree, run_id)
         if reason := observed_cancel_reason():
             if isinstance(outcome, WorkerResult):
@@ -561,6 +596,7 @@ def execute_task(
             "base_sha": base_sha,
             "plan": asdict(plan),
             "providers": providers,
+            "worker_execution": worker_execution,
             "worker": asdict(outcome),
             "checks": [],
         }
