@@ -3,7 +3,7 @@
 | Tool | Repository configuration | Account setup |
 | --- | --- | --- |
 | GitHub Actions | CI runs lint, tests with an 80% coverage floor, package build, and docs build. | None |
-| Main branch ruleset | Changes use a PR with passing quality and Python tests; review threads must be resolved. | None |
+| Main branch ruleset | Changes use a PR with checks passing against current main; review threads must be resolved. | None |
 | CODEOWNERS | Requests review from the repository owner on contributed changes. | None |
 | Ruff and pre-commit | `uv run --locked pre-commit run --all-files` | None |
 | CodeQL | GitHub default setup | None |
@@ -16,6 +16,8 @@
 | CodeRabbit | Reviews pull requests. | Install its GitHub App on this public repository. |
 
 The container includes the planning CLI and Git. It does not bundle a coding worker or a model server. Supply a reachable model endpoint with `ENGINEER_BASE_URL`.
+
+The ruleset requests a PR but requires zero approving reviews while this is a single-maintainer repository. `CODEOWNERS` requests the owner on outside contributions; the owner makes the merge decision.
 
 Local checks:
 
