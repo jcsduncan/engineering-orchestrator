@@ -156,14 +156,32 @@ def test_run_records_worktree_and_checks(planner_url, tmp_path):
         state_dir=state_dir,
     )
     assert result["status"] == "ready_for_review"
+    assert result["checks"][0]["status"] == "passed"
+    assert result["checks"][0]["argv"][:2] == [sys.executable, "-c"]
+    assert result["validation"]["status"] == "passed"
+    assert result["validation"]["diff_sha256_before"] == result["validation"]["diff_sha256_after"]
     assert (Path(result["worktree"]) / "README.md").exists()
     assert (repo / "README.md").read_text() == "before\n"
     with sqlite3.connect(tmp_path / "state/runs.sqlite3") as db:
         assert db.execute("SELECT status FROM runs").fetchone()[0] == "ready_for_review"
         providers = json.loads(db.execute("SELECT providers_json FROM runs").fetchone()[0])
+        stored = json.loads(db.execute("SELECT result_json FROM runs").fetchone()[0])
     assert providers == result["providers"]
     assert providers["planner"]["configuration"]["model"] == "local-test"
     assert providers["worker"]["configuration"]["executable"] == Path(sys.executable).name
+    assert stored["validation"] == result["validation"]
+
+    no_checks = run_task(
+        task="Update readme",
+        repo=repo,
+        model="local-test",
+        base_url=planner_url,
+        worker=worker,
+        checks=[],
+        state_dir=tmp_path / "state-without-checks",
+    )
+    assert no_checks["status"] == "needs_review"
+    assert no_checks["validation"]["status"] == "not_run"
 
 
 def test_injected_providers_execute_independently(tmp_path):
@@ -196,6 +214,36 @@ def test_injected_providers_execute_independently(tmp_path):
     assert result["status"] == "ready_for_review"
     assert result["providers"]["planner"]["name"] == "test-planner"
     assert result["providers"]["worker"]["name"] == "test-worker"
+
+
+def test_unsupported_untracked_entry_preserves_worker_result(tmp_path):
+    class Planner:
+        info = ProviderInfo("test", {})
+
+        def plan(self, _task):
+            return Plan("Task", [], [], [])
+
+    class Worker:
+        info = ProviderInfo("test", {})
+
+        def execute(self, _prompt, worktree, _run_id):
+            subprocess.run(["git", "init", "-q", str(worktree / "nested")], check=True)
+            return WorkerResult(0, "nested repository created", "")
+
+    result = execute_task(
+        task="task",
+        repo=make_repo(tmp_path),
+        planner=Planner(),
+        worker=Worker(),
+        checks=[f"{sys.executable} -c 'print(1)'"],
+        state_dir=tmp_path / "state",
+    )
+
+    assert result["status"] == "needs_review"
+    assert result["worker"]["stdout"] == "nested repository created"
+    assert result["validation"]["status"] == "invalidated"
+    assert result["checks"] == []
+    assert result["changed_files"]
 
 
 def test_invalid_planning_provider_output_is_rejected(tmp_path):
