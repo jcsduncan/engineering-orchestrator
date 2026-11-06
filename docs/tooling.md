@@ -3,7 +3,7 @@
 | Tool | Repository configuration | Account setup |
 | --- | --- | --- |
 | GitHub Actions | CI runs lint, tests with an 80% coverage floor, package and container builds, and docs build. | None |
-| Main branch ruleset | Changes use a PR with checks passing against current main; review threads must be resolved. | None |
+| Main branch ruleset | Changes use a PR with checks passing against current main; review threads must be resolved. Squash is the only merge method, with the PR title as the commit subject. | None |
 | CODEOWNERS | Requests review from the repository owner on contributed changes. | None |
 | Ruff and pre-commit | `uv run --locked pre-commit run --all-files` | None |
 | CodeQL | GitHub default setup | None |

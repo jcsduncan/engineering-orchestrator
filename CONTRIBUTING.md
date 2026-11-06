@@ -6,4 +6,4 @@ Run `uv sync --locked --dev`, then `uv run --locked pre-commit install`. Before 
 
 Add tests for behavior changes and failure paths. Use the PR template to state the behavior changed, checks run, and what remains unverified. Main requires a PR, checks passing against the current base branch, and resolved review threads. The repository owner is requested for review on contributed changes.
 
-Use Conventional Commit subjects for commits and PR titles, such as `fix: reject invalid tasks` or `feat: add issue intake`. CI checks PR titles; Release Please derives versions from these subjects.
+Use Conventional Commit subjects for commits and PR titles, such as `fix: reject invalid tasks` or `feat: add issue intake`. CI checks PR titles; Release Please derives versions from these subjects. Main accepts squash merges only. GitHub uses the PR title as the squash commit subject and leaves its generated body blank.
