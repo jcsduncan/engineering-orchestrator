@@ -44,18 +44,20 @@ Input: task identity, task text, repository, acceptance criteria, base commit, e
 The controller persists state before each external side effect. On restart, it reconciles the worktree and review artifact by run ID before retrying. Retries have explicit limits; cancellation stops the worker and records the partial result.
 
 ```text
-accepted → planning → executing → validating → reviewable
+accepted → planning → executing → validating → reviewable (change | investigation report)
                                   ↘ inconclusive
 Any active state → failed | cancelled
 ```
 
-The worker can propose actions but cannot grant itself publication permissions or approve its own work. It treats the plan as a hypothesis and checks it against repository evidence before editing.
+The worker can propose actions but cannot grant itself publication permissions or approve its own work. It treats the plan as a hypothesis and checks it against repository evidence before editing. Tasks declare investigation or implementation mode. An investigation can finish with a report and no diff; implementation requires a validated change.
 
-Outcomes are a reviewable change, an inconclusive investigation, or a failure. An inconclusive result states what was inspected, what was tested, and what evidence is missing. A successful process exit alone is not a validated change.
+Outcomes are a reviewable change, a reviewable investigation report, an inconclusive investigation, or a failure. A reviewable report answers the task with supporting evidence and needs no diff. An inconclusive result states what was inspected, what was tested, and what evidence is missing. A successful process exit alone is not a validated result.
 
 ## Evidence and review
 
-Each result identifies the task, base commit, final diff or commit, changed files, worker output, check commands and exit codes, and unresolved risks. Validation runs after worker execution. A reviewable change requires at least one relevant check. The review artifact distinguishes tests that passed from tests that were not run.
+Each result identifies the task, base commit, final diff or commit, changed files, worker output, check commands and exit codes, and unresolved risks. Each check records its argument vector, start time, duration, exit code, status, and bounded output. Validation records a hash of the diff before and after checks; a changed hash invalidates the result. A reviewable change requires at least one relevant check. The review artifact distinguishes tests that passed from tests that were not run.
+
+Publication evidence records the merged SHA, CI or deployment run, target, smoke-check result, and rollback target when applicable. A merged PR alone does not establish delivery.
 
 Human review controls merge. Automated review may find defects but cannot replace that gate.
 
