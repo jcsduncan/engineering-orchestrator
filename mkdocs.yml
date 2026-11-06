@@ -8,6 +8,7 @@ nav:
   - High-level design: HLD.md
   - Runtime: runtime.md
   - Tooling: tooling.md
+  - Coding standards: standards.md
   - Decisions:
       - Index: adr/README.md
       - Local orchestration: adr/001-local-orchestrator.md

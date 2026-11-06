@@ -6,3 +6,4 @@ Engineering tasks pass through local planning, a coding worker, and explicit val
 - [Runtime and configuration](runtime.md)
 - [Architecture decisions](adr/README.md)
 - [Repository tooling](tooling.md)
+- [Coding standards](standards.md)
