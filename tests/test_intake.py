@@ -75,9 +75,12 @@ def test_claim_is_idempotent_and_snapshot_is_immutable(store):
     assert claim.snapshot.body == source.issues[7].body
     assert claim.snapshot.run_id.startswith("issue-")
     source.issues[7] = replace(source.issues[7], title="Changed", body="New instructions")
+    assert reconcile(source, store, REPO).claimed == [claim]
+    store.acknowledge_claim(claim.snapshot.run_id)
+    store.acknowledge_claim(claim.snapshot.run_id)
     assert reconcile(source, store, REPO).claimed == []
     assert store.active(17, 99) == [claim]
-    assert source.fetched == [7, 7]
+    assert source.fetched == [7, 7, 7]
 
 
 def test_fresh_state_and_open_blockers_gate_claim(store):
@@ -122,6 +125,7 @@ def test_ineligible_issue_revokes_unfinished_claim(store, changed, reason):
 def test_rerun_requires_new_generation_and_no_overlapping_claim(store):
     source = Source()
     first = reconcile(source, store, REPO).claimed[0]
+    store.acknowledge_claim(first.snapshot.run_id)
     assert reconcile(source, store, REPO, generation=2, issue_number=7).claimed == []
     store.complete(first.snapshot.run_id)
     assert reconcile(source, store, REPO).claimed == []
@@ -151,8 +155,15 @@ def test_cancellation_requires_acknowledgement_after_worker_stops(store):
     source.issues[7] = replace(source.issues[7], state="closed")
     assert reconcile(source, store, REPO).cancelled[0].snapshot.run_id == claim.snapshot.run_id
     assert reconcile(source, store, REPO).cancelled[0].snapshot.run_id == claim.snapshot.run_id
+    source.issues[7] = replace(source.issues[7], state="open")
+    source.candidates = [7]
+    assert reconcile(source, store, REPO, generation=2, issue_number=7).claimed == []
     store.acknowledge_cancel(claim.snapshot.run_id)
     assert reconcile(source, store, REPO).cancelled == []
+    assert (
+        reconcile(source, store, REPO, generation=2, issue_number=7).claimed[0].snapshot.generation
+        == 2
+    )
 
 
 def test_two_store_connections_cannot_duplicate_a_claim(tmp_path):
@@ -162,7 +173,7 @@ def test_two_store_connections_cannot_duplicate_a_claim(tmp_path):
         source = Source()
         claimed = reconcile(source, first, REPO).claimed
         assert len(claimed) == 1
-        assert reconcile(source, second, REPO).claimed == []
+        assert reconcile(source, second, REPO).claimed == claimed
         assert second.active(17, 99) == claimed
     finally:
         first.close()
@@ -184,7 +195,29 @@ def test_simultaneous_pollers_claim_once(tmp_path):
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(poll) for _ in range(2)]
         results = [future.result(timeout=10) for future in futures]
-    assert sorted(len(claims) for claims in results) == [0, 1]
+    assert [claims[0].snapshot.run_id for claims in results] == [results[0][0].snapshot.run_id] * 2
+    store = IssueClaimStore(path)
+    try:
+        assert len(store.active(17, 99)) == 1
+    finally:
+        store.close()
+
+
+def test_claim_redelivers_after_controller_restart(tmp_path):
+    path = tmp_path / "runs.sqlite3"
+    source = Source()
+    first = IssueClaimStore(path)
+    try:
+        claim = reconcile(source, first, REPO).claimed[0]
+    finally:
+        first.close()
+    restarted = IssueClaimStore(path)
+    try:
+        assert reconcile(source, restarted, REPO).claimed == [claim]
+        restarted.acknowledge_claim(claim.snapshot.run_id)
+        assert reconcile(source, restarted, REPO).claimed == []
+    finally:
+        restarted.close()
 
 
 def test_api_failure_does_not_mutate_claims(store):

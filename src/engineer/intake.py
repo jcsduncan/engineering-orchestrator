@@ -190,6 +190,7 @@ class IssueClaimStore:
                     status TEXT NOT NULL CHECK (status IN ('claimed', 'cancelled', 'completed')),
                     snapshot_json TEXT NOT NULL,
                     reason TEXT,
+                    dispatch_ack_at INTEGER,
                     cancel_ack_at INTEGER,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
@@ -218,6 +219,15 @@ class IssueClaimStore:
         )
         return [self._claim(row) for row in rows]
 
+    def pending_claims(self, installation_id: int, repository_id: int) -> list[IssueClaim]:
+        """Return claims until a controller durably accepts their run IDs."""
+        rows = self.db.execute(
+            """SELECT * FROM issue_claims WHERE installation_id = ? AND repository_id = ?
+            AND status = 'claimed' AND dispatch_ack_at IS NULL ORDER BY issue_number""",
+            (installation_id, repository_id),
+        )
+        return [self._claim(row) for row in rows]
+
     def pending_cancellations(self, installation_id: int, repository_id: int) -> list[IssueClaim]:
         """Return revocations until a worker controller acknowledges them."""
         rows = self.db.execute(
@@ -238,12 +248,13 @@ class IssueClaimStore:
         now = int(time.time())
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
-            active = self.db.execute(
+            outstanding = self.db.execute(
                 """SELECT 1 FROM issue_claims WHERE installation_id = ? AND repository_id = ?
-                AND issue_number = ? AND status = 'claimed'""",
+                AND issue_number = ? AND
+                (status = 'claimed' OR (status = 'cancelled' AND cancel_ack_at IS NULL))""",
                 key[:3],
             ).fetchone()
-            if active:
+            if outstanding:
                 return None
             cursor = self.db.execute(
                 """INSERT INTO issue_claims
@@ -255,6 +266,22 @@ class IssueClaimStore:
                 (*key, snapshot.run_id, json.dumps(asdict(snapshot)), now, now),
             )
         return IssueClaim(snapshot, "claimed") if cursor.rowcount == 1 else None
+
+    def acknowledge_claim(self, run_id: str) -> None:
+        """Stop redelivery after the controller has durably accepted a run ID."""
+        with self.db:
+            cursor = self.db.execute(
+                """UPDATE issue_claims SET dispatch_ack_at = ?, updated_at = ?
+                WHERE run_id = ? AND status = 'claimed' AND dispatch_ack_at IS NULL""",
+                (int(time.time()), int(time.time()), run_id),
+            )
+            if cursor.rowcount == 1:
+                return
+            row = self.db.execute(
+                "SELECT status, dispatch_ack_at FROM issue_claims WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None or row["status"] != "claimed" or row["dispatch_ack_at"] is None:
+                raise ValueError("Run has no active issue claim")
 
     def cancel(self, run_id: str, reason: str) -> IssueClaim | None:
         """Revoke an unfinished claim once and retain its task snapshot."""
@@ -381,7 +408,6 @@ def reconcile(
             reason = None
         if reason:
             store.cancel(claim.snapshot.run_id, reason)
-    claimed = []
     for number in sorted(candidates):
         issue = current[number]
         if (
@@ -393,9 +419,8 @@ def reconcile(
             or blockers.get(number, True)
         ):
             continue
-        claim = store.claim(_snapshot(repo, repository_id, issue, generation))
-        if claim:
-            claimed.append(claim)
+        store.claim(_snapshot(repo, repository_id, issue, generation))
     return ReconcileResult(
-        claimed, store.pending_cancellations(repo.installation_id, repository_id)
+        store.pending_claims(repo.installation_id, repository_id),
+        store.pending_cancellations(repo.installation_id, repository_id),
     )

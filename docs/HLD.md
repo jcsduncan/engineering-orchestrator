@@ -39,7 +39,7 @@ The webhook handler verifies `X-Hub-Signature-256`, records the delivery, and ac
 
 Removing `agent:run` or closing the issue cancels unfinished work. The controller records the reason and the evidence collected so far. Issue text remains untrusted input; it cannot change tool permissions or execution limits.
 
-The polling interface returns new claims and cancellation decisions. A unique SQLite key covers installation ID, repository ID, issue number, and generation. Claims snapshot the current issue text and use GitHub's native blocking relationships. The controller consumes cancellation decisions by run ID.
+The polling interface returns claims until dispatch is acknowledged and cancellations until work has stopped. A unique SQLite key covers installation ID, repository ID, issue number, and generation. Claims snapshot the current issue text and use GitHub's native blocking relationships. The controller consumes both decisions by run ID.
 
 ## Run contract
 

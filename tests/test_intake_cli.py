@@ -4,7 +4,7 @@ import fire
 import pytest
 
 from engineer import intake_cli
-from engineer.intake import Issue
+from engineer.intake import Issue, IssueClaimStore
 
 
 class Source:
@@ -39,6 +39,13 @@ def test_fire_reconciles_and_prints_claims(monkeypatch, capsys, tmp_path):
     assert first["claimed"][0]["snapshot"]["acceptance_criteria"] == "- Add a test"
     assert "secret" not in json.dumps(first)
 
+    fire.Fire(intake_cli.run, command=args)
+    assert json.loads(capsys.readouterr().out) == first
+    store = IssueClaimStore(tmp_path / "runs.sqlite3")
+    try:
+        store.acknowledge_claim(first["claimed"][0]["snapshot"]["run_id"])
+    finally:
+        store.close()
     fire.Fire(intake_cli.run, command=args)
     assert json.loads(capsys.readouterr().out) == {"claimed": [], "cancelled": []}
 
