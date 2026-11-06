@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -34,8 +35,17 @@ def _git(repo: Path, *args: str) -> str:
     return subprocess.check_output(
         ["git", "-C", str(repo), *args],
         text=True,
-        env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull},
+        env=_git_environment(),
     ).strip()
+
+
+def _git_environment() -> dict[str, str]:
+    """Keep fixture Git independent of a caller's repository and configuration."""
+    return {
+        **{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+    }
 
 
 def _fixture_repo(source: Path, destination: Path) -> tuple[str, str]:
@@ -46,15 +56,13 @@ def _fixture_repo(source: Path, destination: Path) -> tuple[str, str]:
     _git(destination, "init", "-q", "-b", "main")
     _git(destination, "add", ".")
     environment = {
-        **os.environ,
+        **_git_environment(),
         "GIT_AUTHOR_NAME": "Benchmark Fixture",
         "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
         "GIT_COMMITTER_NAME": "Benchmark Fixture",
         "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
         "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+0000",
         "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+0000",
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
     }
     subprocess.run(
         [
@@ -93,7 +101,7 @@ def load_cases(manifest: Path) -> list[dict[str, Any]]:
         )
         if (
             not isinstance(name, str)
-            or not name.isidentifier()
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", name)
             or name in seen
             or not isinstance(fixture, str)
             or not fixture.isidentifier()

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from engineer import bench_cli
 from engineer.benchmarks import (
     _fixture_repo,
     load_cases,
@@ -49,6 +50,38 @@ def test_fixture_rejects_symlinks(tmp_path: Path) -> None:
     (source / "outside").symlink_to(tmp_path)
     with pytest.raises(ValueError, match="symlinks"):
         _fixture_repo(source, tmp_path / "repo")
+
+
+def test_fixture_git_ignores_inherited_repository_location(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = Path(__file__).parents[1] / "benchmarks/fixtures/negative_totals"
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "missing-repo"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path / "wrong-worktree"))
+    _, commit = _fixture_repo(source, tmp_path / "repo")
+    assert len(commit) == 40
+
+
+def test_manifest_case_id_matches_run_id_contract(tmp_path: Path) -> None:
+    manifest = tmp_path / "tasks.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "cases": [
+                    {
+                        "id": "unicode_é",
+                        "fixture": "fixture",
+                        "task": "Fix this",
+                        "mode": "implementation",
+                        "oracle": ["python", "-c", "pass"],
+                    }
+                ],
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="invalid identity"):
+        load_cases(manifest)
 
 
 def test_score_distinguishes_inconclusive_from_failure() -> None:
@@ -223,3 +256,40 @@ def test_record_measurements_preserves_raw_artifacts(tmp_path: Path) -> None:
     assert json.loads((output / "measured_summary.json").read_text()) == measured
     with pytest.raises(ValueError, match="Invalid costs_usd"):
         record_measurements(output, costs_usd={"unknown": 1.0})
+
+
+def test_benchmark_cli_accepts_fire_parsed_measurement_maps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert bench_cli._mapping("") is None
+    calls = []
+
+    def fake_run_suite(**kwargs):
+        calls.append(kwargs)
+        return {"cases": []}
+
+    def fake_measure(output_dir, **kwargs):
+        calls.append({"output_dir": output_dir, **kwargs})
+        return {"cases": []}
+
+    monkeypatch.setattr(bench_cli, "run_suite", fake_run_suite)
+    monkeypatch.setattr(bench_cli, "record_measurements", fake_measure)
+    bench_cli.run(
+        "tasks.json",
+        str(tmp_path / "out"),
+        "worker -p",
+        "image",
+        model="local",
+        interventions={"negative_totals": 0},
+        costs_usd={"negative_totals": 0.5},
+    )
+    bench_cli.measure(
+        str(tmp_path / "out"),
+        interventions={"negative_totals": 1},
+        costs_usd={"negative_totals": 0.6},
+    )
+    assert calls[0]["interventions"] == {"negative_totals": 0}
+    assert calls[0]["costs_usd"] == {"negative_totals": 0.5}
+    assert calls[1]["interventions"] == {"negative_totals": 1}
+    assert calls[1]["costs_usd"] == {"negative_totals": 0.6}
+    assert capsys.readouterr().out.count('"cases": []') == 2

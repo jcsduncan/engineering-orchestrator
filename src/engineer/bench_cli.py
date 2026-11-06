@@ -12,6 +12,12 @@ import fire
 from .benchmarks import record_measurements, run_suite
 
 
+def _mapping(value: str | dict | None) -> dict | None:
+    if value is None or value == "":
+        return None
+    return value if isinstance(value, dict) else json.loads(value)
+
+
 def run(
     manifest: str,
     output_dir: str,
@@ -19,8 +25,8 @@ def run(
     image: str,
     model: str | None = None,
     base_url: str | None = None,
-    interventions: str | None = None,
-    costs_usd: str | None = None,
+    interventions: str | dict | None = None,
+    costs_usd: str | dict | None = None,
     container_network: str = "none",
 ) -> None:
     """Run a suite with a local planner and coding worker.
@@ -39,8 +45,8 @@ def run(
         worker=shlex.split(worker),
         image=image,
         container_network=container_network,
-        interventions=json.loads(interventions) if interventions else None,
-        costs_usd=json.loads(costs_usd) if costs_usd else None,
+        interventions=_mapping(interventions),
+        costs_usd=_mapping(costs_usd),
     )
     print(json.dumps(summary, indent=2))
 
@@ -51,14 +57,14 @@ def main() -> None:
 
 def measure(
     output_dir: str,
-    interventions: str | None = None,
-    costs_usd: str | None = None,
+    interventions: str | dict | None = None,
+    costs_usd: str | dict | None = None,
 ) -> None:
     """Record measured intervention counts and cost after a suite run."""
     summary = record_measurements(
         Path(output_dir),
-        interventions=json.loads(interventions) if interventions is not None else None,
-        costs_usd=json.loads(costs_usd) if costs_usd is not None else None,
+        interventions=_mapping(interventions),
+        costs_usd=_mapping(costs_usd),
     )
     print(json.dumps(summary, indent=2))
 
