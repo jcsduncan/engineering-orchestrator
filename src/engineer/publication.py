@@ -349,7 +349,12 @@ def _verify_claim(state_dir: Path, issue: PublicationIssue) -> None:
 
 
 def publish_run(
-    *, state_dir: Path, issue: PublicationIssue, title: str, remote: PublicationRemote
+    *,
+    state_dir: Path,
+    issue: PublicationIssue,
+    title: str,
+    remote: PublicationRemote,
+    require_review: bool = False,
 ) -> Publication:
     """Publish or recover one validated run without creating a duplicate PR."""
     if (
@@ -383,6 +388,8 @@ def publish_run(
                 raise ValueError("Run has no validated implementation diff")
             _review_table(store)
             review = _stored_review(store, issue.run_id)
+            if require_review and review is None:
+                raise ValueError("Publication requires an advisory review of the validated diff")
             if review is not None and review["diff_sha256"] != validation["diff_sha256_after"]:
                 raise ValueError("Stored review does not match validated diff")
             worktree = Path(record["worktree"])
