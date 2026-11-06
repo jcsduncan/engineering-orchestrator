@@ -29,7 +29,11 @@ def _digest_tree(root: Path) -> str:
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+    return subprocess.check_output(
+        ["git", "-C", str(repo), *args],
+        text=True,
+        env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull},
+    ).strip()
 
 
 def _fixture_repo(source: Path, destination: Path) -> tuple[str, str]:
@@ -143,12 +147,14 @@ def score_case(
         validation_quality = bool(
             report.get("findings") and all(item.get("evidence") for item in report["findings"])
         )
+    if status == "inconclusive":
+        outcome = "inconclusive"
+    elif correctness:
+        outcome = "completed"
+    else:
+        outcome = "failed"
     return {
-        "outcome": "inconclusive"
-        if status == "inconclusive"
-        else "completed"
-        if correctness
-        else "failed",
+        "outcome": outcome,
         "correctness": correctness,
         "validation_quality": validation_quality,
         "interventions": interventions,
