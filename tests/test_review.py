@@ -123,6 +123,29 @@ def test_cached_review_rejects_later_worktree_change(tmp_path):
     assert len(reviewer.contexts) == 1
 
 
+def test_deleted_file_finding_uses_old_diff_side(tmp_path):
+    class DeletingWorker(Worker):
+        def execute(self, _prompt, worktree, _run_id):
+            (worktree / "README.md").unlink()
+            return WorkerResult(0, "deleted", "")
+
+    state_dir, result = make_ready(tmp_path, worker=DeletingWorker())
+    assert result["status"] == "ready_for_review"
+    reviewer = Reviewer(
+        [
+            {
+                "severity": "major",
+                "file": "README.md",
+                "side": "old",
+                "line": 1,
+                "issue": "Required content was removed",
+                "evidence": "The old first line was deleted",
+            }
+        ]
+    )
+    assert review_run(state_dir, "review-me", reviewer)["status"] == "completed"
+
+
 @pytest.mark.parametrize(
     "finding",
     [
