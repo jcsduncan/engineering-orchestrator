@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,8 +19,36 @@ jobs:
       tag: ${{ steps.release.outputs.tag_name }}
       version: ${{ steps.release.outputs.version }}
     steps:
+      - id: release-app-token
+        if: ${{ vars.RELEASE_APP_CLIENT_ID != '' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
       - id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
+        with:
+          token: ${{ steps.release-app-token.outputs.token || github.token }}
+      - name: Auto-merge release PR
+        if: ${{ steps.release-app-token.outputs.token != '' }}
+        env:
+          GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
+        run: |
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --state open \
+            --json number,headRefName,headRefOid,title \
+            | jq -c '[.[] | select(.headRefName == "release-please--branches--main--components--engineering-orchestrator")][0] // empty')
+          if [ -z "$pr" ]; then
+            exit 0
+          fi
+          number=$(jq -r '.number' <<< "$pr")
+          head_sha=$(jq -r '.headRefOid' <<< "$pr")
+          title=$(jq -r '.title' <<< "$pr")
+          subject="${title#*: }"
+          subject="${subject^}"
+          gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --auto --squash \
+            --subject "$subject" --body "" --match-head-commit "$head_sha"
 
   image:
     needs: release
