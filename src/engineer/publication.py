@@ -257,6 +257,15 @@ def _changed_manifest(worktree: Path, git_dir: Path) -> str:
     return digest.hexdigest()
 
 
+def _advisory_text(value: str) -> str:
+    """Render untrusted reviewer text without GitHub mentions or Markdown syntax."""
+    unsafe = set("&@#\\`*_{}[]()<>!|")
+    return "".join(
+        f"&#{ord(character)};" if character in unsafe else character
+        for character in json.dumps(value)
+    )
+
+
 def _body(issue: PublicationIssue, record: dict, title: str, review: dict | None) -> str:
     result = record["result"]
     checks = result["checks"]
@@ -268,14 +277,14 @@ def _body(issue: PublicationIssue, record: dict, title: str, review: dict | None
     if review is None:
         review_lines = ["- Not run"]
     elif review["status"] != "completed":
-        review_lines = [f"- {review['status']}: {json.dumps(review['error'])}"]
+        review_lines = [f"- {review['status']}: {_advisory_text(review['error'])}"]
     elif not review["findings"]:
         review_lines = ["- No actionable findings reported"]
     else:
         review_lines = [
-            f"- {finding['severity']} {json.dumps(finding['file'])} "
-            f"({finding['side']} line {finding['line']}): {json.dumps(finding['issue'])}; "
-            f"evidence: {json.dumps(finding['evidence'])}"
+            f"- {finding['severity']} {_advisory_text(finding['file'])} "
+            f"({finding['side']} line {finding['line']}): {_advisory_text(finding['issue'])}; "
+            f"evidence: {_advisory_text(finding['evidence'])}"
             for finding in review["findings"]
         ]
     lines = [

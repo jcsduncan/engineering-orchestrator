@@ -84,6 +84,44 @@ def test_review_impact_rejects_unsafe_case_id(tmp_path):
         review_benchmark_output(tmp_path, Reviewer())
 
 
+def test_review_impact_records_case_error_and_continues(tmp_path, monkeypatch):
+    (tmp_path / "summary.json").write_text(
+        json.dumps({"manifest_sha256": "a" * 64, "cases": [{"id": "bad"}, {"id": "good"}]})
+    )
+    for case_id, passed in (("bad", False), ("good", True)):
+        case_dir = tmp_path / case_id
+        case_dir.mkdir()
+        (case_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "case": case_id,
+                    "mode": "implementation",
+                    "result": {"status": "ready_for_review"},
+                    "oracle": {"passed": passed},
+                }
+            )
+        )
+
+    calls = []
+
+    def fake_review(_state_dir, run_id, _reviewer):
+        calls.append(run_id)
+        if run_id == "bad":
+            raise ValueError("Validated diff changed")
+        return {"status": "completed", "findings": []}
+
+    monkeypatch.setattr("engineer.review_eval.review_run", fake_review)
+    report = review_benchmark_output(tmp_path, Reviewer())
+    assert calls == ["bad", "good"]
+    assert [case["review_status"] for case in report["cases"]] == ["error", "completed"]
+    assert report["impact_proxy"]["completed_reviews"] == 1
+    assert report["impact_proxy"]["reviewed_bad_accepts"] == 1
+    assert json.loads((tmp_path / "bad/review.json").read_text())["error"] == (
+        "Validated diff changed"
+    )
+    assert json.loads((tmp_path / "review_summary.json").read_text()) == report
+
+
 def test_review_benchmark_consumes_real_run_artifact(tmp_path, monkeypatch):
     class Planner:
         info = ProviderInfo("fixture-planner", {})

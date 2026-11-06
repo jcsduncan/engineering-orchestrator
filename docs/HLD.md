@@ -69,7 +69,7 @@ Each result identifies the task, base commit, final diff or commit, changed file
 
 Publication evidence records the merged SHA, CI or deployment run, target, smoke-check result, and rollback target when applicable. A merged PR alone does not establish delivery.
 
-An independent reviewer receives only the task, validated diff, and check evidence. Its file/line findings are advisory, keyed to the validated diff, and shown to the human reviewer. It has no workspace or publication tools. Human review controls merge.
+After the worker runtime returns one result, an independent reviewer runs as an external run-level validation step. It receives only the task, validated diff, and check evidence. Its file/line findings are advisory, keyed to the validated diff, and shown to the human reviewer. It has no workspace or publication tools and does not join or direct the runtime's internal agents. Human review controls merge.
 
 For a validated implementation run, the controller rechecks the diff identity before committing the run branch. It publishes with a GitHub App token limited to the claimed repository, then finds or creates one PR for the run ID. The PR links the issue and states the base SHA, validated diff identity, checks, risks, and unverified work. Investigation outcomes are not published as code changes.
 

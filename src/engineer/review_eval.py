@@ -44,7 +44,17 @@ def review_benchmark_output(output_dir: Path, reviewer: ReviewProvider) -> dict:
             raise ValueError("Benchmark case identity does not match its artifact")
         if record["mode"] != "implementation" or record["result"]["status"] != "ready_for_review":
             continue
-        review = review_run(case_dir / "state", case_id, reviewer)
+        try:
+            review = review_run(case_dir / "state", case_id, reviewer)
+        except ValueError as exc:
+            review = {
+                "run_id": case_id,
+                "diff_sha256": (record["result"].get("validation") or {}).get("diff_sha256_after"),
+                "provider": asdict(reviewer.info),
+                "status": "error",
+                "findings": [],
+                "error": str(exc)[:500],
+            }
         (case_dir / "review.json").write_text(json.dumps(review, indent=2) + "\n")
         oracle = record["oracle"]
         oracle_passed = oracle["passed"] if oracle and type(oracle.get("passed")) is bool else None

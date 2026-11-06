@@ -206,6 +206,38 @@ def test_publication_includes_diff_bound_advisory_findings(tmp_path):
     assert "The new line says after" in remote.pull["body"]
 
 
+def test_publication_quotes_untrusted_review_fields(tmp_path):
+    _, issue, state_dir = make_run(tmp_path)
+
+    class Reviewer:
+        info = ProviderInfo("fixture-reviewer", {})
+
+        def review(self, _context):
+            return {
+                "findings": [
+                    {
+                        "severity": "major",
+                        "file": "README.md",
+                        "side": "new",
+                        "line": 1,
+                        "issue": "Ping @alice and close #123",
+                        "evidence": "![pixel](https://example.test/pixel)",
+                    }
+                ]
+            }
+
+    review_run(state_dir, issue.run_id, Reviewer())
+    remote = FakeRemote()
+    publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    body = remote.pull["body"]
+    assert "@alice" not in body
+    assert "#123" not in body
+    assert "[run](" not in body
+    assert "![pixel](" not in body
+    assert "&#64;alice" in body
+    assert "&#35;123" in body
+
+
 @pytest.mark.parametrize(("change", "checks"), [(False, True), (True, False)])
 def test_rejects_unreviewable_run(tmp_path, change, checks):
     _, issue, state_dir = make_run(tmp_path, change=change, checks=checks)
