@@ -8,6 +8,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, CancelledError, Future, ThreadPoolExecutor, wait
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -149,7 +150,7 @@ class RunQueue:
         reason = reason.strip()
         if not reason or len(reason) > 500:
             raise ValueError("Cancellation reason must be 1-500 characters")
-        with sqlite3.connect(self.path, timeout=30) as connection:
+        with closing(sqlite3.connect(self.path, timeout=30)) as connection, connection:
             connection.row_factory = sqlite3.Row
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -180,7 +181,7 @@ class RunQueue:
 
     def cancellation_reason(self, run_id: str) -> str | None:
         """Read the durable cancellation reason from any execution thread."""
-        with sqlite3.connect(self.path, timeout=30) as connection:
+        with closing(sqlite3.connect(self.path, timeout=30)) as connection, connection:
             row = connection.execute(
                 "SELECT cancel_reason FROM scheduled_runs WHERE run_id = ?", (run_id,)
             ).fetchone()
