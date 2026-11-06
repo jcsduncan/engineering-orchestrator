@@ -9,7 +9,7 @@ from pathlib import Path
 
 import fire
 
-from .benchmarks import run_suite
+from .benchmarks import record_measurements, run_suite
 
 
 def run(
@@ -47,3 +47,21 @@ def run(
 
 def main() -> None:
     fire.Fire(run, name="engineer-bench")
+
+
+def measure(
+    output_dir: str,
+    interventions: str | None = None,
+    costs_usd: str | None = None,
+) -> None:
+    """Record measured intervention counts and cost after a suite run."""
+    summary = record_measurements(
+        Path(output_dir),
+        interventions=json.loads(interventions) if interventions is not None else None,
+        costs_usd=json.loads(costs_usd) if costs_usd is not None else None,
+    )
+    print(json.dumps(summary, indent=2))
+
+
+def measure_main() -> None:
+    fire.Fire(measure, name="engineer-bench-measure")

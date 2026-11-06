@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from engineer.benchmarks import _fixture_repo, load_cases, run_suite, score_case
+from engineer.benchmarks import (
+    _fixture_repo,
+    load_cases,
+    record_measurements,
+    run_suite,
+    score_case,
+)
 from engineer.container import ContainerResult, ContainerRuntime
 
 
@@ -193,3 +199,27 @@ def test_suite_rejects_invalid_intervention_map(tmp_path: Path) -> None:
             interventions=[],  # type: ignore[arg-type]
         )
     assert not (tmp_path / "out").exists()
+
+
+def test_record_measurements_preserves_raw_artifacts(tmp_path: Path) -> None:
+    output = tmp_path / "run"
+    output.mkdir()
+    original = {
+        "manifest_sha256": "fixture",
+        "cases": [
+            {
+                "id": "negative_totals",
+                "score": {"correctness": True, "interventions": None, "cost_usd": None},
+            }
+        ],
+    }
+    (output / "summary.json").write_text(json.dumps(original))
+    measured = record_measurements(
+        output, interventions={"negative_totals": 2}, costs_usd={"negative_totals": 0.5}
+    )
+    assert measured["cases"][0]["score"]["interventions"] == 2
+    assert measured["cases"][0]["score"]["cost_usd"] == 0.5
+    assert json.loads((output / "summary.json").read_text()) == original
+    assert json.loads((output / "measured_summary.json").read_text()) == measured
+    with pytest.raises(ValueError, match="Invalid costs_usd"):
+        record_measurements(output, costs_usd={"unknown": 1.0})

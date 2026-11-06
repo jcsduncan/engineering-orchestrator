@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -164,6 +165,29 @@ def score_case(
     }
 
 
+def _validate_measurements(
+    case_ids: set[str],
+    interventions: dict[str, int] | None,
+    costs_usd: dict[str, float] | None,
+) -> tuple[dict[str, int], dict[str, float]]:
+    intervention_values = interventions if interventions is not None else {}
+    cost_values = costs_usd if costs_usd is not None else {}
+    for values, label, expected in (
+        (intervention_values, "interventions", int),
+        (cost_values, "costs_usd", (int, float)),
+    ):
+        if not isinstance(values, dict) or any(
+            key not in case_ids
+            or not isinstance(value, expected)
+            or isinstance(value, bool)
+            or value < 0
+            or (isinstance(value, float) and not math.isfinite(value))
+            for key, value in values.items()
+        ):
+            raise ValueError(f"Invalid {label} map")
+    return intervention_values, cost_values
+
+
 def run_suite(
     *,
     manifest: Path,
@@ -183,22 +207,9 @@ def run_suite(
         raise ValueError("Benchmark worker command is required")
     if not image:
         raise ValueError("Benchmark container image is required")
-    known_ids = {case["id"] for case in cases}
-    intervention_values = interventions if interventions is not None else {}
-    cost_values = costs_usd if costs_usd is not None else {}
-    for values, label, expected in (
-        (intervention_values, "interventions", int),
-        (cost_values, "costs_usd", (int, float)),
-    ):
-        if not isinstance(values, dict) or any(
-            key not in known_ids
-            or not isinstance(value, expected)
-            or isinstance(value, bool)
-            or value < 0
-            or (isinstance(value, float) and not math.isfinite(value))
-            for key, value in values.items()
-        ):
-            raise ValueError(f"Invalid {label} map")
+    intervention_values, cost_values = _validate_measurements(
+        {case["id"] for case in cases}, interventions, costs_usd
+    )
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError("Benchmark output directory must be empty")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -287,6 +298,38 @@ def run_suite(
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     return summary
+
+
+def record_measurements(
+    output_dir: Path,
+    *,
+    interventions: dict[str, int] | None = None,
+    costs_usd: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Add observed human effort and cost without changing raw run artifacts."""
+    if interventions is None and costs_usd is None:
+        raise ValueError("At least one measurement map is required")
+    summary = json.loads((output_dir / "summary.json").read_text())
+    cases = summary["cases"]
+    if not isinstance(cases, list) or any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("id"), str)
+        or not item["id"].isidentifier()
+        or not isinstance(item.get("score"), dict)
+        for item in cases
+    ):
+        raise ValueError("Benchmark summary has invalid cases")
+    measured = deepcopy(summary)
+    intervention_values, cost_values = _validate_measurements(
+        {item["id"] for item in cases}, interventions, costs_usd
+    )
+    for item in measured["cases"]:
+        if item["id"] in intervention_values:
+            item["score"]["interventions"] = intervention_values[item["id"]]
+        if item["id"] in cost_values:
+            item["score"]["cost_usd"] = cost_values[item["id"]]
+    (output_dir / "measured_summary.json").write_text(json.dumps(measured, indent=2) + "\n")
+    return measured
 
 
 def _origin(base_url: str) -> str:
