@@ -39,8 +39,17 @@ class UnsupportedDiffEntry(ValueError):
     """An untracked entry cannot be represented by the diff hash."""
 
 
-def _git_bytes(repo: Path, *args: str) -> bytes:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=True).stdout
+def _git_bytes(repo: Path, *args: str, git_dir: Path | None = None) -> bytes:
+    command = ["git", "-C", str(repo)]
+    if git_dir is not None:
+        command = [
+            "git",
+            f"--git-dir={git_dir}",
+            f"--work-tree={repo}",
+            "-c",
+            "core.fsmonitor=false",
+        ]
+    return subprocess.run([*command, *args], capture_output=True, check=True).stdout
 
 
 def _update_chunk(digest, value: bytes) -> None:
@@ -48,16 +57,18 @@ def _update_chunk(digest, value: bytes) -> None:
     digest.update(value)
 
 
-def diff_sha256(worktree: Path) -> str:
+def diff_sha256(worktree: Path, *, git_dir: Path | None = None) -> str:
     """Hash tracked worktree/index changes and untracked files without mutating Git state."""
     digest = hashlib.sha256()
     for args in (
         ("diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD"),
         ("diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD"),
     ):
-        _update_chunk(digest, _git_bytes(worktree, *args))
+        _update_chunk(digest, _git_bytes(worktree, *args, git_dir=git_dir))
 
-    paths = _git_bytes(worktree, "ls-files", "--others", "--exclude-standard", "-z")
+    paths = _git_bytes(
+        worktree, "ls-files", "--others", "--exclude-standard", "-z", git_dir=git_dir
+    )
     for raw_path in sorted(path for path in paths.split(b"\0") if path):
         path = worktree / os.fsdecode(raw_path)
         mode = path.lstat().st_mode
@@ -83,13 +94,14 @@ def validate_worktree(
     runner: CheckRunner | None = None,
     run_id: str = "",
     git_guard: Callable[[], None] | None = None,
+    git_dir: Path | None = None,
 ) -> ValidationEvidence:
     """Run checks in order and bind their results to the final worktree diff."""
     results = []
     try:
         if git_guard is not None:
             git_guard()
-        before = diff_sha256(worktree)
+        before = diff_sha256(worktree, git_dir=git_dir)
     except UnsupportedDiffEntry as exc:
         return ValidationEvidence(results, None, None, "invalidated", str(exc))
     for check in checks:
@@ -148,7 +160,7 @@ def validate_worktree(
     try:
         if git_guard is not None:
             git_guard()
-        after = diff_sha256(worktree)
+        after = diff_sha256(worktree, git_dir=git_dir)
     except UnsupportedDiffEntry as exc:
         return ValidationEvidence(results, before, None, "invalidated", str(exc))
     if before != after:

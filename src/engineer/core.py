@@ -28,10 +28,17 @@ from .validation import CheckResult, validate_worktree
 __all__ = ["Plan", "plan_task", "run_task", "execute_task"]
 
 
-def git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
-    )
+def git(repo: Path, *args: str, git_dir: Path | None = None) -> str:
+    command = ["git", "-C", str(repo)]
+    if git_dir is not None:
+        command = [
+            "git",
+            f"--git-dir={git_dir}",
+            f"--work-tree={repo}",
+            "-c",
+            "core.fsmonitor=false",
+        ]
+    result = subprocess.run([*command, *args], capture_output=True, text=True, check=True)
     return result.stdout.strip()
 
 
@@ -81,15 +88,15 @@ def _acquire_run_lock(state_dir: Path, run_id: str) -> BinaryIO:
     return handle
 
 
-def _registered_git_pointer(repo: Path, worktree: Path) -> bool:
+def _registered_git_dir(repo: Path, worktree: Path) -> Path | None:
     """Check a worktree pointer against metadata owned by the target repository."""
     pointer = worktree / ".git"
     if pointer.is_symlink() or not pointer.is_file():
-        return False
+        return None
     try:
         content = pointer.read_text().strip()
         if not content.startswith("gitdir: "):
-            return False
+            return None
         target = Path(content.removeprefix("gitdir: "))
         if not target.is_absolute():
             target = worktree / target
@@ -98,11 +105,11 @@ def _registered_git_pointer(repo: Path, worktree: Path) -> bool:
             git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
         ).resolve(strict=True)
         if not target.is_relative_to(common_dir / "worktrees"):
-            return False
+            return None
         back_pointer = Path((target / "gitdir").read_text().strip()).resolve(strict=True)
-        return back_pointer == pointer.resolve(strict=True)
+        return target if back_pointer == pointer.resolve(strict=True) else None
     except (OSError, ValueError, subprocess.CalledProcessError):
-        return False
+        return None
 
 
 def _ensure_worktree(repo: Path, worktree: Path, branch: str, base_sha: str) -> None:
@@ -110,13 +117,14 @@ def _ensure_worktree(repo: Path, worktree: Path, branch: str, base_sha: str) -> 
     if worktree.is_symlink():
         raise RuntimeError("Run worktree cannot be a symlink")
     if worktree.exists():
-        if not _registered_git_pointer(repo, worktree):
+        git_dir = _registered_git_dir(repo, worktree)
+        if git_dir is None:
             raise RuntimeError("Existing run worktree has an invalid Git metadata pointer")
         try:
-            root = Path(git(worktree, "rev-parse", "--show-toplevel")).resolve()
-            actual_branch = git(worktree, "symbolic-ref", "--short", "HEAD")
-            actual_sha = git(worktree, "rev-parse", "HEAD")
-            dirty = git(worktree, "status", "--porcelain")
+            root = Path(git(worktree, "rev-parse", "--show-toplevel", git_dir=git_dir)).resolve()
+            actual_branch = git(worktree, "symbolic-ref", "--short", "HEAD", git_dir=git_dir)
+            actual_sha = git(worktree, "rev-parse", "HEAD", git_dir=git_dir)
+            dirty = git(worktree, "status", "--porcelain", git_dir=git_dir)
         except subprocess.CalledProcessError as exc:
             raise RuntimeError("Existing run worktree is not a valid Git worktree") from exc
         if root != worktree.resolve() or actual_branch != branch or actual_sha != base_sha or dirty:
@@ -166,12 +174,14 @@ def _interrupted_result(store: RunStore, record: dict) -> dict:
     if worktree.is_symlink():
         result["worktree_error"] = "Run worktree is a symlink"
     elif worktree.exists():
-        if not _registered_git_pointer(Path(record["repo"]), worktree):
+        git_dir = _registered_git_dir(Path(record["repo"]), worktree)
+        if git_dir is None:
             result["worktree_error"] = "Run worktree Git metadata pointer is invalid"
             store.transition(record["id"], record["status"], "needs_review", result=result)
             return result
         try:
-            result["changed_files"] = git(worktree, "status", "--short").splitlines()
+            changed_files = git(worktree, "status", "--short", git_dir=git_dir)
+            result["changed_files"] = changed_files.splitlines()
         except subprocess.CalledProcessError:
             result["worktree_error"] = "Run worktree cannot be inspected"
     else:
@@ -309,6 +319,9 @@ def execute_task(
             record = store.get(run_id)
         plan = Plan(**record["plan"])
         _ensure_worktree(repo, worktree, branch, base_sha)
+        git_dir = _registered_git_dir(repo, worktree)
+        if git_dir is None:
+            raise RuntimeError("Run worktree has an invalid Git metadata pointer")
         git_pointer = (worktree / ".git").read_bytes()
 
         def verify_git_pointer() -> None:
@@ -356,6 +369,7 @@ def execute_task(
             runner=check_runner,
             run_id=run_id,
             git_guard=verify_git_pointer,
+            git_dir=git_dir,
         )
         progress["validation"] = {
             "diff_sha256_before": validation.diff_sha256_before,
@@ -364,7 +378,7 @@ def execute_task(
             "reason": validation.reason,
         }
         verify_git_pointer()
-        diff = git(worktree, "status", "--short")
+        diff = git(worktree, "status", "--short", git_dir=git_dir)
         result = {**progress, "changed_files": diff.splitlines()}
         status = (
             "ready_for_review"

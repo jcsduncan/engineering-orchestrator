@@ -10,6 +10,7 @@ import pytest
 from engineer.container import ContainerResult, ContainerRuntime
 from engineer.core import run_task
 from engineer.providers import Plan
+from engineer.validation import diff_sha256
 
 
 @pytest.fixture
@@ -98,6 +99,17 @@ def test_git_metadata_mount_does_not_follow_worktree_pointer(worktree):
     )
 
 
+def test_host_diff_uses_pinned_git_dir(worktree):
+    git_dir = Path(
+        subprocess.check_output(
+            ["git", "-C", str(worktree), "rev-parse", "--absolute-git-dir"], text=True
+        ).strip()
+    )
+    expected = diff_sha256(worktree, git_dir=git_dir)
+    (worktree / ".git").write_text("gitdir: /etc\n")
+    assert diff_sha256(worktree, git_dir=git_dir) == expected
+
+
 @pytest.mark.parametrize("run_id", ["Resume_ABC123", "a" * 64])
 def test_container_accepts_resume_run_ids(worktree, run_id):
     runtime = ContainerRuntime("test-image", worktree.parent / "repo/.git")
@@ -167,7 +179,8 @@ def test_runner_bounds_output_and_removes_container(worktree, monkeypatch):
     assert commands and commands[0][0:3] == ["docker", "rm", "-f"]
 
 
-def test_timeout_kills_docker_cli_when_cleanup_fails(worktree, monkeypatch):
+@pytest.mark.parametrize("cleanup_mode", ["timeout", "still_running"])
+def test_timeout_kills_docker_cli_when_cleanup_fails(worktree, monkeypatch, cleanup_mode):
     import engineer.container as container
 
     class Process:
@@ -193,15 +206,20 @@ def test_timeout_kills_docker_cli_when_cleanup_fails(worktree, monkeypatch):
     def fail_cleanup(command, **kwargs):
         if command[0] == "git":
             return subprocess.CompletedProcess(command, 0, "sha1\n", "")
-        raise subprocess.TimeoutExpired(["docker", "rm"], 10)
+        if cleanup_mode == "timeout":
+            raise subprocess.TimeoutExpired(["docker", "rm"], 10)
+        if command[:3] == ["docker", "rm", "-f"]:
+            return subprocess.CompletedProcess(command, 1, b"", b"error")
+        if command[:2] == ["docker", "ps"]:
+            return subprocess.CompletedProcess(command, 0, "container-id\n", "")
+        pytest.fail(f"Unexpected command: {command}")
 
     monkeypatch.setattr(container.subprocess, "run", fail_cleanup)
     monkeypatch.setattr(container.subprocess, "Popen", lambda *_args, **_kwargs: process)
-    result = ContainerRuntime("image", worktree.parent / "repo/.git").run(
-        ["python", "--version"], worktree, "run-1", 1, 100
-    )
-    assert result.exit_code is None
-    assert "timed out" in result.stderr
+    with pytest.raises(RuntimeError, match="Could not confirm container removal"):
+        ContainerRuntime("image", worktree.parent / "repo/.git").run(
+            ["python", "--version"], worktree, "run-1", 1, 100
+        )
     assert process.killed
 
 
@@ -209,8 +227,9 @@ def test_timeout_kills_docker_cli_when_cleanup_fails(worktree, monkeypatch):
 def test_container_isolation_and_timeout(worktree, tmp_path, monkeypatch):
     image = os.environ["ENGINEER_TEST_IMAGE"]
     runtime = ContainerRuntime(image, worktree.parent / "repo/.git").resolve_image()
-    outside = tmp_path / "outside-secret"
-    outside.write_text("secret")
+    publication_credentials = tmp_path / "controller" / "gh" / "hosts.yml"
+    publication_credentials.parent.mkdir(parents=True)
+    publication_credentials.write_text("oauth_token: host-secret\n")
     monkeypatch.setenv("GH_TOKEN", "host-secret")
     script = f"""
 import os
@@ -219,7 +238,7 @@ import errno
 from pathlib import Path
 assert os.getenv('GH_TOKEN') is None
 assert not Path('/var/run/docker.sock').exists()
-assert not Path({str(outside)!r}).exists()
+assert not Path({str(publication_credentials)!r}).exists()
 assert subprocess.check_output(['git', 'status', '--short']) == b''
 metadata_text = subprocess.check_output(
     ['git', 'rev-parse', '--absolute-git-dir'], text=True

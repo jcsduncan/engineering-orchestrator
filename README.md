@@ -25,6 +25,7 @@ uv run --locked engineer "Fix the failing test" \
 
 The worker and checks run in disposable containers with the worktree mounted. No model or worker image is bundled.
 The `--check` command runs in the target repository, so use that repository's test command.
+With the default `--container-network none`, `uv run` needs dependencies already available in the worktree or an offline source; tools installed in the image do not populate the worktree's `.venv`. Use `--container-network bridge` when dependency downloads are required.
 For multiple checks, pass a list such as `--check='["uv run --locked ruff check .", "uv run --locked pytest -q"]'`.
 
 ## Documentation

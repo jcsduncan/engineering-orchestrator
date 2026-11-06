@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import os
 import re
@@ -199,6 +198,7 @@ class ContainerRuntime:
         for reader in readers:
             reader.start()
         timed_out = False
+        cleanup_error = None
         try:
             try:
                 exit_code = process.wait(timeout=timeout)
@@ -207,15 +207,37 @@ class ContainerRuntime:
                 exit_code = None
         finally:
             # Removing a named container kills its process tree even if the Docker CLI exits first.
-            with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-                subprocess.run(
+            try:
+                removal = subprocess.run(
                     ["docker", "rm", "-f", name], capture_output=True, check=False, timeout=10
                 )
+                if removal.returncode != 0:
+                    remaining = subprocess.run(
+                        [
+                            "docker",
+                            "ps",
+                            "-a",
+                            "--filter",
+                            f"name=^/{name}$",
+                            "--format",
+                            "{{.ID}}",
+                        ],
+                        capture_output=True,
+                        check=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    if remaining.stdout.strip():
+                        raise RuntimeError("Container is still running after cleanup")
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                cleanup_error = exc
             if process.poll() is None:
                 process.kill()
             process.wait(timeout=10)
             for reader in readers:
                 reader.join(timeout=10)
+        if cleanup_error is not None:
+            raise RuntimeError("Could not confirm container removal") from cleanup_error
         stdout = out_tail.decode(errors="replace")
         stderr = err_tail.decode(errors="replace")
         if timed_out:
