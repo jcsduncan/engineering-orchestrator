@@ -6,9 +6,11 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from engineer import controller_cli
 from engineer.controller import (
     ControllerSettings,
     RepositoryTarget,
@@ -163,6 +165,42 @@ def test_controller_executes_claim_once_and_finalizes(tmp_path: Path) -> None:
         assert len(calls) == 1
     finally:
         claims.close()
+
+
+def test_cancellation_probe_short_circuit_keeps_cancelled_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = target(tmp_path)
+    config = settings(tmp_path, repo)
+    claims = IssueClaimStore(config.state_dir / "runs.sqlite3")
+    claims.claim(snapshot("one", repo))
+
+    def cancelled_at_dispatch(queue, execute, **kwargs):
+        item = queue.dispatch()
+        result = execute(item, lambda: True)
+        assert result == {"status": "cancelled", "reason": "Issue claim revoked"}
+        return [queue.finish(item.run_id, result["status"], result)]
+
+    monkeypatch.setattr("engineer.controller.run_queued", cancelled_at_dispatch)
+    try:
+        completed = run_pass(config, execute_run=lambda **kwargs: pytest.fail("Worker started"))
+        assert completed[0].status == "cancelled"
+    finally:
+        claims.close()
+
+
+def test_acknowledge_cli_converts_numeric_fire_argument(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(controller_cli, "load_settings", lambda path: object())
+
+    def acknowledge(settings, run_id):
+        assert run_id == "12345"
+        return SimpleNamespace(run_id=run_id, status="needs_review")
+
+    monkeypatch.setattr(controller_cli, "acknowledge_interrupted", acknowledge)
+    controller_cli.acknowledge("config.json", 12345)
+    assert json.loads(capsys.readouterr().out)["run_id"] == "12345"
 
 
 def test_finalization_replays_after_controller_crash(tmp_path: Path) -> None:

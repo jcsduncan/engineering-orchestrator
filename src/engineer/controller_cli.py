@@ -42,7 +42,7 @@ def run(config: str, once: bool = False) -> None:
 
 def acknowledge(config: str, run_id: str) -> None:
     """Release an interrupted run after verifying its container is gone."""
-    item = acknowledge_interrupted(load_settings(Path(config)), run_id)
+    item = acknowledge_interrupted(load_settings(Path(config)), str(run_id))
     print(json.dumps({"run_id": item.run_id, "status": item.status}))
 
 

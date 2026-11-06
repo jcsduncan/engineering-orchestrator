@@ -324,7 +324,8 @@ def run_pass(
             def cancelled(run_id: str) -> str | None:
                 return queue.cancellation_reason(run_id) or claim_cancel_reason(database, run_id)
 
-            if should_cancel() or (reason := cancelled(item.run_id)):
+            reason = cancelled(item.run_id)
+            if reason or should_cancel():
                 return {"status": "cancelled", "reason": reason or "Issue claim revoked"}
             result = execute_run(
                 task=task_text(item.snapshot),
