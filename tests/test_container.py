@@ -317,6 +317,23 @@ Path('README.md').write_text('after\\n')
 
 
 @pytest.mark.skipif(not os.getenv("ENGINEER_TEST_IMAGE"), reason="No local test image configured")
+def test_oracle_container_cannot_modify_worktree(worktree):
+    runtime = ContainerRuntime(
+        os.environ["ENGINEER_TEST_IMAGE"], worktree.parent / "repo/.git"
+    ).resolve_image()
+    result = runtime.run(
+        ["python", "-B", "-c", "from pathlib import Path; Path('README.md').write_text('changed')"],
+        worktree,
+        "oracle-readonly",
+        30,
+        2000,
+        readonly_worktree=True,
+    )
+    assert result.exit_code != 0
+    assert (worktree / "README.md").read_text() == "before\n"
+
+
+@pytest.mark.skipif(not os.getenv("ENGINEER_TEST_IMAGE"), reason="No local test image configured")
 def test_run_task_executes_worker_and_checks_in_container(worktree, tmp_path, monkeypatch):
     monkeypatch.setattr(
         "engineer.providers.OpenAICompatiblePlanner.plan",
