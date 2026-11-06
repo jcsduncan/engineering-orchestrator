@@ -20,3 +20,4 @@ nav:
       - Automatic releases: adr/005-automatic-releases.md
       - Delivery evidence: adr/006-delivery-evidence.md
       - Worker agent coordination: adr/007-worker-owned-agent-coordination.md
+      - Independent review: adr/007-independent-review.md

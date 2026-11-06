@@ -30,6 +30,8 @@ For multiple checks, pass a list such as `--check='["uv run --locked ruff check 
 
 Use `uv run --locked engineer status RUN_ID` to inspect a run and `uv run --locked engineer cancel RUN_ID --reason 'Operator requested'` to stop it. Retry a `failed` or `cancelled` run with `uv run --locked engineer retry RUN_ID 'task'` plus the original `--repo`, `--model`, `--image`, `--worker`, `--check`, and `--mode` options. Retry creates a new run at the source base commit and is limited to three generations.
 
+Review a validated change with `uv run --locked engineer review RUN_ID --model LOCAL_REVIEW_MODEL`. The reviewer gets the task, diff, and check evidence without workspace tools. Findings are advisory and tied to the validated diff.
+
 ## Documentation
 
 - [System design](docs/HLD.md)

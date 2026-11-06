@@ -9,3 +9,4 @@ ADRs record constraints on implementation. Task plans live elsewhere.
 - [005: Automatic release publication](005-automatic-releases.md)
 - [006: Diff-bound validation and delivery evidence](006-delivery-evidence.md)
 - [007: Worker-owned agent coordination](007-worker-owned-agent-coordination.md)
+- [007: Independent advisory review](007-independent-review.md)
