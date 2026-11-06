@@ -28,6 +28,8 @@ The `--check` command runs in the target repository, so use that repository's te
 With the default `--container-network none`, `uv run` needs dependencies already available in the worktree or an offline source; tools installed in the image do not populate the worktree's `.venv`. Use `--container-network bridge` when dependency downloads are required.
 For multiple checks, pass a list such as `--check='["uv run --locked ruff check .", "uv run --locked pytest -q"]'`.
 
+Use `uv run --locked engineer status RUN_ID` to inspect a run and `uv run --locked engineer cancel RUN_ID --reason 'Operator requested'` to stop it. Retry a `failed` or `cancelled` run with `uv run --locked engineer retry RUN_ID 'task'` plus the original `--repo`, `--model`, `--image`, `--worker`, `--check`, and `--mode` options. Retry creates a new run at the source base commit and is limited to three generations.
+
 ## Documentation
 
 - [System design](docs/HLD.md)

@@ -128,6 +128,60 @@ def test_cli_requires_container_image(monkeypatch):
         cli.run("Fix test", model="local-test", worker="qwen -p")
 
 
+def test_cli_status_and_cancel_commands(monkeypatch, capsys, tmp_path):
+    captured = {}
+
+    def fake_status(state_dir, run_id):
+        captured["status"] = (state_dir, run_id)
+        return {"status": "executing"}
+
+    def fake_cancel(state_dir, run_id, reason):
+        captured["cancel"] = (state_dir, run_id, reason)
+        return {"status": "cancellation_requested"}
+
+    monkeypatch.setattr(cli, "status_run", fake_status)
+    monkeypatch.setattr(cli, "cancel_run", fake_cancel)
+    monkeypatch.setattr(sys, "argv", ["engineer", "status", "run-1", "--state-dir", str(tmp_path)])
+    cli.main()
+    assert json.loads(capsys.readouterr().out) == {"status": "executing"}
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "engineer",
+            "cancel",
+            "run-1",
+            "--reason",
+            "Operator stopped",
+            "--state-dir",
+            str(tmp_path),
+        ],
+    )
+    cli.main()
+    assert json.loads(capsys.readouterr().out) == {"status": "cancellation_requested"}
+    assert captured == {
+        "status": (tmp_path, "run-1"),
+        "cancel": (tmp_path, "run-1", "Operator stopped"),
+    }
+
+
+def test_cli_retry_command_forwards_new_generation(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(cli, "run", lambda task, **options: captured.update(task=task, **options))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["engineer", "retry", "source-run", "Fix test", "--worker", "qwen -p", "--image", "image"],
+    )
+    cli.main()
+    assert captured == {
+        "task": "Fix test",
+        "retry_of": "source-run",
+        "worker": "qwen -p",
+        "image": "image",
+    }
+
+
 @pytest.mark.parametrize("alias", ["--check", "--c", "-c", "-check"])
 def test_cli_rejects_repeated_check_flags(monkeypatch, alias):
     monkeypatch.setattr(

@@ -6,22 +6,33 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .cancellation import RunCancelled
+
 ACTIVE_STATES = {"accepted", "planning", "workspace_pending", "executing", "validating"}
-FINAL_STATES = {"ready_for_review", "report_for_review", "inconclusive", "needs_review", "failed"}
+FINAL_STATES = {
+    "ready_for_review",
+    "report_for_review",
+    "inconclusive",
+    "needs_review",
+    "failed",
+    "cancelled",
+}
 TRANSITIONS = {
-    "running": {"needs_review", "failed"},
-    "accepted": {"planning", "failed"},
-    "planning": {"workspace_pending", "needs_review", "failed"},
-    "workspace_pending": {"executing", "failed"},
-    "executing": {"validating", "needs_review", "failed"},
+    "running": {"needs_review", "failed", "cancelled"},
+    "accepted": {"planning", "failed", "cancelled"},
+    "planning": {"workspace_pending", "needs_review", "failed", "cancelled"},
+    "workspace_pending": {"executing", "failed", "cancelled"},
+    "executing": {"validating", "needs_review", "failed", "cancelled"},
     "validating": {
         "ready_for_review",
         "report_for_review",
         "inconclusive",
         "needs_review",
         "failed",
+        "cancelled",
     },
 }
+MAX_RETRIES = 3
 _UNSET = object()
 
 
@@ -43,7 +54,8 @@ class RunStore:
                     status TEXT NOT NULL, task TEXT NOT NULL, plan_json TEXT NOT NULL,
                     result_json TEXT, providers_json TEXT NOT NULL DEFAULT '{}',
                     snapshot_json TEXT NOT NULL DEFAULT '{}',
-                    mode TEXT NOT NULL DEFAULT 'implementation'
+                    mode TEXT NOT NULL DEFAULT 'implementation',
+                    cancel_reason TEXT, parent_id TEXT, generation INTEGER NOT NULL DEFAULT 0
                 )"""
             )
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(runs)")}
@@ -56,6 +68,16 @@ class RunStore:
                 self.db.execute(
                     "ALTER TABLE runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'implementation'"
                 )
+            for column, definition in (
+                ("cancel_reason", "TEXT"),
+                ("parent_id", "TEXT"),
+                ("generation", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if column not in columns:
+                    self.db.execute(f"ALTER TABLE runs ADD COLUMN {column} {definition}")
+            self.db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS one_retry_per_run ON runs(parent_id)"
+            )
             self.db.execute(
                 """CREATE TABLE IF NOT EXISTS run_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,6 +115,8 @@ class RunStore:
         snapshot: dict[str, Any],
         providers: dict[str, Any],
         mode: str = "implementation",
+        parent_id: str | None = None,
+        generation: int = 0,
     ) -> None:
         """Create an accepted run and its first event atomically."""
         now = int(time.time())
@@ -100,8 +124,8 @@ class RunStore:
             self.db.execute(
                 """INSERT INTO runs
                 (id, created_at, repo, base_sha, branch, worktree, status, task,
-                 plan_json, result_json, providers_json, snapshot_json, mode)
-                VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?, '{}', NULL, ?, ?, ?)""",
+                 plan_json, result_json, providers_json, snapshot_json, mode, parent_id, generation)
+                VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?, '{}', NULL, ?, ?, ?, ?, ?)""",
                 (
                     run_id,
                     now,
@@ -113,6 +137,8 @@ class RunStore:
                     json.dumps(providers),
                     json.dumps(snapshot),
                     mode,
+                    parent_id,
+                    generation,
                 ),
             )
             self.db.execute(
@@ -141,12 +167,16 @@ class RunStore:
         if result is not _UNSET:
             assignments.append("result_json = ?")
             values.append(json.dumps(result))
+        guard = " AND cancel_reason IS NULL" if status in FINAL_STATES - {"cancelled"} else ""
         values.extend((run_id, expected))
         with self.db:
             cursor = self.db.execute(
-                f"UPDATE runs SET {', '.join(assignments)} WHERE id = ? AND status = ?", values
+                f"UPDATE runs SET {', '.join(assignments)} WHERE id = ? AND status = ?{guard}",
+                values,
             )
             if cursor.rowcount != 1:
+                if reason := self.cancellation_reason(run_id):
+                    raise RunCancelled(reason)
                 raise RuntimeError(f"Run {run_id} is no longer in {expected}")
             self.db.execute(
                 """INSERT INTO run_events (run_id, created_at, status, detail_json)
@@ -163,6 +193,27 @@ class RunStore:
             )
             if cursor.rowcount != 1:
                 raise RuntimeError(f"Run {run_id} is no longer in {status}")
+
+    def request_cancel(self, run_id: str, reason: str) -> dict[str, Any]:
+        """Persist a cancellation request without taking the execution lock."""
+        with self.db:
+            self.db.execute(
+                "UPDATE runs SET cancel_reason = ? WHERE id = ? AND status IN "
+                "('accepted', 'planning', 'workspace_pending', 'executing', 'validating') "
+                "AND cancel_reason IS NULL",
+                (reason, run_id),
+            )
+            record = self.get(run_id)
+            if record is None:
+                raise ValueError(f"Unknown run ID: {run_id}")
+            if record["status"] in FINAL_STATES - {"cancelled"}:
+                raise ValueError(f"Run {run_id} is already final")
+            return record
+
+    def cancellation_reason(self, run_id: str) -> str | None:
+        """Return the requested reason, if any."""
+        row = self.db.execute("SELECT cancel_reason FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return row[0] if row is not None else None
 
     def events(self, run_id: str) -> list[str]:
         """Return the persisted status history in event order."""

@@ -5,10 +5,13 @@ import json
 import os
 import subprocess
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
+
+from .cancellation import run_cancellable_command
 
 
 @dataclass(frozen=True)
@@ -140,6 +143,7 @@ class OpenAICompatiblePlanner:
 class CommandWorker:
     command: tuple[str, ...]
     timeout: int = 1800
+    cancel_reason: Callable[[str], str | None] | None = None
 
     def __post_init__(self) -> None:
         if not self.command or any(not arg for arg in self.command):
@@ -160,6 +164,17 @@ class CommandWorker:
         )
 
     def execute(self, prompt: str, worktree: Path, run_id: str) -> WorkerResult:
+        if self.cancel_reason is not None:
+            exit_code, stdout, stderr = run_cancellable_command(
+                [*self.command, prompt],
+                worktree,
+                run_id,
+                self.timeout,
+                50000,
+                self.cancel_reason,
+                env={**os.environ, "ENGINEER_RUN_ID": run_id},
+            )
+            return WorkerResult(exit_code, stdout, stderr)
         try:
             completed = subprocess.run(
                 [*self.command, prompt],

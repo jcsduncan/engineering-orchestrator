@@ -4,12 +4,14 @@ import fcntl
 import hashlib
 import json
 import re
+import sqlite3
 import subprocess
 import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import BinaryIO
 
+from .cancellation import CancellationProbe, RunCancelled
 from .container import ContainerCheckRunner, ContainerRuntime, ContainerWorker
 from .providers import (
     CheckRunner,
@@ -23,10 +25,10 @@ from .providers import (
     plan_task,
 )
 from .reports import REPORT_PREFIX, parse_investigation_report
-from .state import ACTIVE_STATES, FINAL_STATES, RunStore
+from .state import ACTIVE_STATES, FINAL_STATES, MAX_RETRIES, RunStore
 from .validation import CheckResult, validate_worktree
 
-__all__ = ["Plan", "plan_task", "run_task", "execute_task"]
+__all__ = ["Plan", "plan_task", "run_task", "execute_task", "status_run", "cancel_run"]
 
 
 def git(repo: Path, *args: str, git_dir: Path | None = None) -> str:
@@ -192,6 +194,117 @@ def _interrupted_result(store: RunStore, record: dict) -> dict:
     return result
 
 
+def status_run(state_dir: Path, run_id: str) -> dict:
+    """Return persisted status, lineage, events, and available evidence."""
+    run_id = _run_id(run_id)
+    database = state_dir.expanduser().resolve() / "runs.sqlite3"
+    if not database.exists():
+        raise ValueError(f"Unknown run ID: {run_id}")
+    store = RunStore(database)
+    try:
+        record = store.get(run_id)
+        if record is None:
+            raise ValueError(f"Unknown run ID: {run_id}")
+        return {
+            "id": run_id,
+            "status": record["status"],
+            "cancel_reason": record["cancel_reason"],
+            "generation": record["generation"],
+            "parent_id": record["parent_id"],
+            "result": record["result"],
+            "events": store.events(run_id),
+        }
+    finally:
+        store.close()
+
+
+def cancel_run(state_dir: Path, run_id: str, reason: str) -> dict:
+    """Request cancellation and finalize an idle run immediately."""
+    run_id = _run_id(run_id)
+    reason = reason.strip()
+    if not reason or len(reason) > 500:
+        raise ValueError("Cancellation reason must be 1-500 characters")
+    state_dir = state_dir.expanduser().resolve()
+    database = state_dir / "runs.sqlite3"
+    if not database.exists():
+        raise ValueError(f"Unknown run ID: {run_id}")
+    store = RunStore(database)
+    try:
+        record = store.request_cancel(run_id, reason)
+        if record["status"] == "cancelled":
+            return status_run(state_dir, run_id)
+        try:
+            lock = _acquire_run_lock(state_dir, run_id)
+        except RuntimeError:
+            return {
+                "id": run_id,
+                "status": "cancellation_requested",
+                "reason": record["cancel_reason"],
+            }
+        try:
+            record = store.get(run_id)
+            if record is not None and record["status"] in ACTIVE_STATES:
+                result = {
+                    **(record["result"] or {}),
+                    "id": run_id,
+                    "status": "cancelled",
+                    "reason": record["cancel_reason"],
+                }
+                store.transition(
+                    run_id,
+                    record["status"],
+                    "cancelled",
+                    result=result,
+                    detail={"reason": record["cancel_reason"]},
+                )
+            return status_run(state_dir, run_id)
+        finally:
+            lock.close()
+    finally:
+        store.close()
+
+
+def _finish_cancelled(store: RunStore, record: dict, repo: Path, exc: RunCancelled) -> dict:
+    """Finalize cancellation with safely inspected partial evidence."""
+    run_id = record["id"]
+    partial = record["result"] or {}
+    partial.update(
+        {
+            "id": run_id,
+            "status": "cancelled",
+            "reason": exc.reason,
+            "worktree": record["worktree"],
+            "base_sha": record["base_sha"],
+            "generation": record["generation"],
+            "parent_id": record["parent_id"],
+        }
+    )
+    if record["status"] == "executing":
+        partial["worker"] = {"exit_code": None, "stdout": exc.stdout, "stderr": exc.stderr}
+    elif exc.stdout or exc.stderr:
+        partial["cancelled_check"] = {
+            "command": exc.command,
+            "stdout": exc.stdout,
+            "stderr": exc.stderr,
+        }
+    worktree = Path(record["worktree"])
+    if worktree.exists() and (git_dir := _registered_git_dir(repo, worktree)) is not None:
+        try:
+            partial["changed_files"] = git(
+                worktree, "status", "--short", git_dir=git_dir
+            ).splitlines()
+        except subprocess.CalledProcessError:
+            partial["worktree_error"] = "Run worktree cannot be inspected"
+    store.transition(
+        run_id,
+        record["status"],
+        "cancelled",
+        result=partial,
+        detail={"reason": exc.reason},
+    )
+    return partial
+
+
 def run_task(
     *,
     task: str,
@@ -210,8 +323,10 @@ def run_task(
     container_pids: int = 128,
     container_network: str = "none",
     mode: str = "implementation",
+    retry_of: str | None = None,
 ) -> dict:
     """Execute with the default planner and a host or container command worker."""
+    cancellation = CancellationProbe(state_dir.expanduser().resolve() / "runs.sqlite3")
     if execution_image:
         git_metadata = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
         runtime = ContainerRuntime(
@@ -221,11 +336,12 @@ def run_task(
             memory_mb=container_memory_mb,
             pids=container_pids,
             network=container_network,
+            cancel_reason=cancellation,
         ).resolve_image()
         worker_provider: WorkerProvider = ContainerWorker(runtime, tuple(worker), worker_timeout)
         check_runner: CheckRunner | None = ContainerCheckRunner(runtime)
     else:
-        worker_provider = CommandWorker(tuple(worker), worker_timeout)
+        worker_provider = CommandWorker(tuple(worker), worker_timeout, cancellation)
         check_runner = None
     return execute_task(
         task=task,
@@ -238,6 +354,8 @@ def run_task(
         run_id=run_id,
         check_runner=check_runner,
         mode=mode,
+        cancel_reason=cancellation,
+        retry_of=retry_of,
     )
 
 
@@ -253,6 +371,8 @@ def execute_task(
     run_id: str | None = None,
     check_runner: CheckRunner | None = None,
     mode: str = "implementation",
+    cancel_reason: CancellationProbe | None = None,
+    retry_of: str | None = None,
 ) -> dict:
     """Execute or safely resume a task with independently selected providers."""
     if not isinstance(mode, str) or mode not in {"implementation", "investigation"}:
@@ -273,6 +393,10 @@ def execute_task(
         request["mode"] = mode
     request_digest = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
     run_id = _run_id(run_id)
+    if retry_of is not None:
+        retry_of = _run_id(retry_of)
+        if retry_of == run_id:
+            raise ValueError("Retry must use a new run ID")
     lock = _acquire_run_lock(state_dir, run_id)
     try:
         store = RunStore(state_dir / "runs.sqlite3")
@@ -285,21 +409,41 @@ def execute_task(
         if record is None:
             if git(repo, "status", "--porcelain"):
                 raise ValueError("Target repository must have a clean worktree")
-            base_sha = git(repo, "rev-parse", "HEAD")
+            parent = store.get(retry_of) if retry_of is not None else None
+            if retry_of is not None:
+                if parent is None:
+                    raise ValueError(f"Unknown retry source: {retry_of}")
+                if parent["status"] not in {"failed", "cancelled"}:
+                    raise ValueError("Only failed or cancelled runs can be retried")
+                if parent["generation"] >= MAX_RETRIES:
+                    raise ValueError(f"Retry limit of {MAX_RETRIES} reached")
+                if parent["snapshot"].get("request_digest") != request_digest:
+                    raise ValueError("Retry task or configuration differs from source run")
+            base_sha = parent["base_sha"] if parent is not None else git(repo, "rev-parse", "HEAD")
+            generation = parent["generation"] + 1 if parent is not None else 0
             branch = f"agent/{run_id}"
             worktree = state_dir / "worktrees" / run_id
-            store.create(
-                run_id=run_id,
-                repo=repo,
-                base_sha=base_sha,
-                branch=branch,
-                worktree=worktree,
-                task=task,
-                mode=mode,
-                snapshot={**request, "request_digest": request_digest, "base_sha": base_sha},
-                providers=providers,
-            )
+            try:
+                store.create(
+                    run_id=run_id,
+                    repo=repo,
+                    base_sha=base_sha,
+                    branch=branch,
+                    worktree=worktree,
+                    task=task,
+                    mode=mode,
+                    snapshot={**request, "request_digest": request_digest, "base_sha": base_sha},
+                    providers=providers,
+                    parent_id=retry_of,
+                    generation=generation,
+                )
+            except sqlite3.IntegrityError as exc:
+                if retry_of is not None:
+                    raise ValueError("Retry source already has a new generation") from exc
+                raise
             record = store.get(run_id)
+        elif record["parent_id"] != retry_of:
+            raise ValueError("Run ID belongs to a different retry generation")
         elif record["snapshot"].get("request_digest") != request_digest:
             if (
                 record["snapshot"]
@@ -314,6 +458,12 @@ def execute_task(
         if record["status"] in FINAL_STATES:
             return record["result"] or {"id": run_id, "status": record["status"]}
         owned = True
+
+        def check_cancel() -> None:
+            if reason := store.cancellation_reason(run_id):
+                raise RunCancelled(reason)
+
+        check_cancel()
         if record["status"] in {"planning", "executing", "validating"}:
             return _interrupted_result(store, record)
         base_sha = record["base_sha"]
@@ -330,6 +480,7 @@ def execute_task(
             )
             plan = planner.plan(planning_task)
             _validate_plan(plan)
+            check_cancel()
             store.transition(run_id, "planning", "workspace_pending", plan=asdict(plan))
             record = store.get(run_id)
         plan = Plan(**record["plan"])
@@ -345,6 +496,7 @@ def execute_task(
                 raise ValueError("Worker changed Git worktree metadata pointer")
 
         store.transition(run_id, "workspace_pending", "executing")
+        check_cancel()
         prompt = (
             f"Task:\n{task}\n\nPlan from the local controller (verify against code):\n"
             f"{json.dumps(asdict(plan), indent=2)}\n\n"
@@ -369,6 +521,10 @@ def execute_task(
                 "Do not commit, push, or open a pull request."
             )
         outcome = worker.execute(prompt, worktree, run_id)
+        if reason := store.cancellation_reason(run_id):
+            if isinstance(outcome, WorkerResult):
+                raise RunCancelled(reason, outcome.stdout, outcome.stderr)
+            raise RunCancelled(reason)
         if (
             not isinstance(outcome, WorkerResult)
             or (outcome.exit_code is not None and type(outcome.exit_code) is not int)
@@ -402,6 +558,7 @@ def execute_task(
             run_id=run_id,
             git_guard=verify_git_pointer,
             git_dir=git_dir,
+            cancel_reason=cancel_reason,
         )
         progress["validation"] = {
             "diff_sha256_before": validation.diff_sha256_before,
@@ -447,15 +604,23 @@ def execute_task(
         result["status"] = status
         store.transition(run_id, "validating", status, result=result)
         return result
+    except RunCancelled as exc:
+        record = store.get(run_id)
+        if record is None or record["status"] not in ACTIVE_STATES:
+            raise
+        return _finish_cancelled(store, record, repo, exc)
     except Exception as exc:
         record = store.get(run_id)
         if owned and record is not None and record["status"] in ACTIVE_STATES:
-            store.transition(
-                run_id,
-                record["status"],
-                "failed",
-                result={**(record["result"] or {}), "error": str(exc)},
-            )
+            try:
+                store.transition(
+                    run_id,
+                    record["status"],
+                    "failed",
+                    result={**(record["result"] or {}), "error": str(exc)},
+                )
+            except RunCancelled as cancelled:
+                return _finish_cancelled(store, record, repo, cancelled)
         raise
     finally:
         store.close()

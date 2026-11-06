@@ -43,7 +43,7 @@ Removing `agent:run` or closing the issue cancels unfinished work. The controlle
 
 Input: task identity, task text, repository, acceptance criteria, base commit, execution limits, and validation commands. Repeated delivery of the same task must resolve to the same run ID.
 
-The controller persists state before each external side effect. On restart, it reconciles the worktree and review artifact by run ID before retrying. It never repeats worker or validation commands after an uncertain interruption; those runs need review. Retries have explicit limits; cancellation stops the worker and records the partial result.
+The controller persists state before each external side effect. On restart, it reconciles the worktree and review artifact by run ID before retrying. It never repeats worker or validation commands after an uncertain interruption; those runs need review. A failed or cancelled run can start one fresh child generation at the same base commit, up to three retries. Cancellation stops the worker or check and records the reason and partial output.
 
 ```text
 accepted → planning → workspace_pending → executing → validating → reviewable (change | investigation report)
