@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+auth_file=/run/secrets/worker-auth
+if [ ! -s "$auth_file" ]; then
+    echo "Claude worker requires an API key file at $auth_file" >&2
+    exit 64
+fi
+
+ANTHROPIC_API_KEY=$(cat "$auth_file")
+export ANTHROPIC_API_KEY
+exec claude --permission-mode dontAsk --permission-prompts none \
+    --allowedTools 'Bash,Read,Edit,Write,Glob,Grep,Agent' -p "$@"

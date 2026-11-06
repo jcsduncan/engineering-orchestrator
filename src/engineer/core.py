@@ -14,7 +14,12 @@ from typing import BinaryIO
 
 from .cancellation import CancellationProbe, RunCancelled
 from .capabilities import WorkerProfile, require_mode
-from .container import ContainerCheckRunner, ContainerRuntime, ContainerWorker
+from .container import (
+    ContainerCheckRunner,
+    ContainerRuntime,
+    ContainerWorker,
+    validate_worker_auth_file,
+)
 from .providers import (
     CheckRunner,
     CommandWorker,
@@ -329,11 +334,16 @@ def run_task(
     external_cancel_reason: Callable[[str], str | None] | None = None,
     worker_mode: str = "single",
     worker_profile: WorkerProfile | None = None,
+    worker_auth_file: Path | None = None,
 ) -> dict:
     """Execute with the default planner and a host or container command worker."""
     require_mode(worker_mode, worker_profile)
     if worker_profile is not None:
         worker_profile.require_command(worker)
+    if worker_auth_file is not None:
+        if not execution_image:
+            raise ValueError("Worker auth file requires container execution")
+        worker_auth_file = validate_worker_auth_file(worker_auth_file)
     cancellation = CancellationProbe(
         state_dir.expanduser().resolve() / "runs.sqlite3", external_cancel_reason
     )
@@ -350,7 +360,9 @@ def run_task(
         ).resolve_image()
         if worker_profile is not None and runtime.image != worker_profile.image_digest:
             raise ValueError("Worker image does not match verified capability profile")
-        worker_provider: WorkerProvider = ContainerWorker(runtime, tuple(worker), worker_timeout)
+        worker_provider: WorkerProvider = ContainerWorker(
+            runtime, tuple(worker), worker_timeout, worker_auth_file
+        )
         check_runner: CheckRunner | None = ContainerCheckRunner(runtime)
     else:
         if worker_profile is not None:

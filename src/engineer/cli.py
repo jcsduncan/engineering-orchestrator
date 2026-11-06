@@ -36,6 +36,7 @@ def run(
     retry_of: str | None = None,
     worker_mode: str = "single",
     worker_profile: str | None = None,
+    worker_auth_file: str | None = None,
 ) -> None:
     """Plan a task locally, or execute it with a coding worker and validation commands.
 
@@ -53,6 +54,8 @@ def run(
         raise SystemExit("--retry-of requires --worker")
     if worker_profile is not None and not worker:
         raise SystemExit("--worker-profile requires --worker")
+    if worker_auth_file is not None and not worker:
+        raise SystemExit("--worker-auth-file requires --worker")
     if worker_mode != "single" and not worker:
         raise SystemExit("--worker-mode requires --worker")
     if run_id is not None:
@@ -92,6 +95,7 @@ def run(
             retry_of=retry_of,
             worker_mode=worker_mode,
             worker_profile=profile,
+            worker_auth_file=Path(worker_auth_file) if worker_auth_file else None,
         )
         print(json.dumps(result, indent=2))
     else:

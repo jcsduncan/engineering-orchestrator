@@ -8,6 +8,7 @@ Without `--worker`, the CLI requests a structured plan from a local model. With 
 | `ENGINEER_BASE_URL` or `--base-url` | OpenAI-compatible API prefix | `http://127.0.0.1:11434/v1` |
 | `--repo` | Target Git repository | Current directory |
 | `--worker` | Command prefix; task prompt is appended as the last argument | Plan only |
+| `--worker-auth-file` | Private file mounted only into the worker container at `/run/secrets/worker-auth` | None |
 | `--image` | Local container image containing the worker and validation tools | Required with `--worker` |
 | `--check` | Validation command; pass a list for multiple checks | None |
 | `--state-dir` | SQLite database and worktree root | `~/.local/share/engineering-orchestrator` |
@@ -42,6 +43,8 @@ Programmatic `run_task(..., external_cancel_reason=callback)` accepts a controll
 `engineer-bench-review OUTPUT_DIR --model LOCAL_REVIEW_MODEL` reviews saved implementation candidates from `engineer-bench` and writes separate `review.json` and `review_summary.json` artifacts. The impact proxy compares accepting every reviewable candidate with holding candidates that receive a major or critical finding. It counts incorrect candidates flagged and correct candidates flagged using each benchmark's oracle. This is a decision proxy; findings still need human adjudication, and an unreviewed candidate is not a measured improvement.
 
 The CLI resolves the local image to its immutable ID, then runs the worker and checks in disposable containers using that image. Each container mounts the run worktree read/write and pinned Git metadata read-only, with repository and worktree Git configs masked to hide remote credentials. It inherits no host environment variables or home directory and has no Docker socket. Its root filesystem is read-only, with a writable temporary filesystem. Docker applies CPU, memory, and process limits; the controller terminates a timed-out container. The controller rejects a changed worktree `.git` pointer before reading Git state on the host. `bridge` networking adds `host.docker.internal` for an explicitly configured model endpoint. Worker execution and PR publication use separate commands. Programmatic host execution remains available for trusted integrations.
+
+When configured, `worker_auth_file` in the controller JSON or `--worker-auth-file` on the CLI supplies one regular file owned by the runner with no group or other permissions. It is mounted read-only into the worker container only; validation containers do not receive it. The secret value is never placed in Docker argv, stored run metadata, or build artifacts. The worker can read its own model credential, so use a dedicated key with a spend limit and keep publication credentials outside the container. See [Claude Code worker](worker-claude.md) for its invocation and probe procedure.
 
 ## Providers
 

@@ -145,10 +145,12 @@ def test_config_file_loads_argument_vectors_without_shell(tmp_path: Path) -> Non
     payload["worker"] = ["worker", "-p"]
     payload["worker_mode"] = "subagents"
     payload["worker_profile"] = asdict(worker_profile())
+    payload["worker_auth_file"] = str(tmp_path / "api-key")
     config_path.write_text(json.dumps(payload))
     selected = load_settings(config_path)
     assert selected.worker_mode == "subagents"
     assert selected.worker_profile == worker_profile()
+    assert selected.worker_auth_file == tmp_path / "api-key"
 
 
 def test_unsupported_mode_and_image_mismatch_preserve_claim(
@@ -184,7 +186,15 @@ def test_controller_passes_verified_mode_to_worker(
 ) -> None:
     repo = target(tmp_path)
     selected = worker_profile()
-    config = replace(settings(tmp_path, repo), worker_mode="subagents", worker_profile=selected)
+    auth_file = tmp_path / "api-key"
+    auth_file.write_text("probe-only-placeholder\n")
+    auth_file.chmod(0o600)
+    config = replace(
+        settings(tmp_path, repo),
+        worker_mode="subagents",
+        worker_profile=selected,
+        worker_auth_file=auth_file,
+    )
     claims = IssueClaimStore(config.state_dir / "runs.sqlite3")
     claims.claim(snapshot("one", repo))
     monkeypatch.setattr("engineer.controller.verify_worker_image", lambda *_args: None)
@@ -199,6 +209,20 @@ def test_controller_passes_verified_mode_to_worker(
         assert calls[0]["worker_mode"] == "subagents"
         assert calls[0]["worker_profile"] == selected
         assert calls[0]["execution_image"] == selected.image_digest
+        assert calls[0]["worker_auth_file"] == auth_file
+    finally:
+        claims.close()
+
+
+def test_missing_worker_auth_file_preserves_claim(tmp_path: Path) -> None:
+    repo = target(tmp_path)
+    config = replace(settings(tmp_path, repo), worker_auth_file=tmp_path / "missing-key")
+    claims = IssueClaimStore(config.state_dir / "runs.sqlite3")
+    try:
+        claims.claim(snapshot("one", repo))
+        with pytest.raises(ValueError, match="regular file"):
+            run_pass(config, execute_run=lambda **kwargs: pytest.fail("Worker started"))
+        assert claims.pending_claims(1, 10)[0].snapshot.run_id == "one"
     finally:
         claims.close()
 
