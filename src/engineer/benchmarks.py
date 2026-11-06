@@ -238,7 +238,12 @@ def run_suite(
             try:
                 assert runtime is not None
                 completed = runtime.run(
-                    case["oracle"], Path(result["worktree"]), case["id"], 120, 20_000
+                    case["oracle"],
+                    Path(result["worktree"]),
+                    case["id"],
+                    120,
+                    20_000,
+                    readonly_worktree=True,
                 )
                 oracle_result = {
                     "passed": completed.exit_code == 0,
