@@ -7,6 +7,7 @@ import re
 import sqlite3
 import subprocess
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import BinaryIO
@@ -324,9 +325,12 @@ def run_task(
     container_network: str = "none",
     mode: str = "implementation",
     retry_of: str | None = None,
+    external_cancel_reason: Callable[[str], str | None] | None = None,
 ) -> dict:
     """Execute with the default planner and a host or container command worker."""
-    cancellation = CancellationProbe(state_dir.expanduser().resolve() / "runs.sqlite3")
+    cancellation = CancellationProbe(
+        state_dir.expanduser().resolve() / "runs.sqlite3", external_cancel_reason
+    )
     if execution_image:
         git_metadata = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
         runtime = ContainerRuntime(
@@ -373,12 +377,23 @@ def execute_task(
     mode: str = "implementation",
     cancel_reason: CancellationProbe | None = None,
     retry_of: str | None = None,
+    external_cancel_reason: Callable[[str], str | None] | None = None,
 ) -> dict:
     """Execute or safely resume a task with independently selected providers."""
     if not isinstance(mode, str) or mode not in {"implementation", "investigation"}:
         raise ValueError("Mode must be implementation or investigation")
     repo = Path(git(repo, "rev-parse", "--show-toplevel"))
     state_dir = state_dir.expanduser().resolve()
+    if external_cancel_reason is not None:
+        if cancel_reason is not None and cancel_reason.external_cancel_reason is not None:
+            previous = cancel_reason.external_cancel_reason
+            incoming = external_cancel_reason
+
+            def combined(run_id: str) -> str | None:
+                return previous(run_id) or incoming(run_id)
+
+            external_cancel_reason = combined
+        cancel_reason = CancellationProbe(state_dir / "runs.sqlite3", external_cancel_reason)
     if type(check_timeout) is not int or check_timeout <= 0:
         raise ValueError("Check timeout must be positive")
     providers = _provider_metadata(planner, worker)
@@ -404,6 +419,12 @@ def execute_task(
         lock.close()
         raise
     owned = False
+
+    def observed_cancel_reason() -> str | None:
+        if cancel_reason is not None:
+            return cancel_reason(run_id)
+        return store.cancellation_reason(run_id)
+
     try:
         record = store.get(run_id)
         if record is None:
@@ -460,7 +481,7 @@ def execute_task(
         owned = True
 
         def check_cancel() -> None:
-            if reason := store.cancellation_reason(run_id):
+            if reason := observed_cancel_reason():
                 raise RunCancelled(reason)
 
         check_cancel()
@@ -521,7 +542,7 @@ def execute_task(
                 "Do not commit, push, or open a pull request."
             )
         outcome = worker.execute(prompt, worktree, run_id)
-        if reason := store.cancellation_reason(run_id):
+        if reason := observed_cancel_reason():
             if isinstance(outcome, WorkerResult):
                 raise RunCancelled(reason, outcome.stdout, outcome.stderr)
             raise RunCancelled(reason)
@@ -613,6 +634,12 @@ def execute_task(
         record = store.get(run_id)
         if owned and record is not None and record["status"] in ACTIVE_STATES:
             try:
+                try:
+                    reason = observed_cancel_reason()
+                except Exception:
+                    reason = None
+                if reason:
+                    return _finish_cancelled(store, record, repo, RunCancelled(reason))
                 store.transition(
                     run_id,
                     record["status"],
