@@ -7,6 +7,7 @@ import json
 import re
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
@@ -95,7 +96,7 @@ class IssueSource(Protocol):
 class GitHubIssueSource:
     """Read GitHub REST issues with a scoped installation token."""
 
-    def __init__(self, token: str, *, timeout: int = 20) -> None:
+    def __init__(self, token: str | Callable[[], str], *, timeout: int = 20) -> None:
         if not token:
             raise ValueError("A GitHub token is required")
         if timeout <= 0:
@@ -104,11 +105,14 @@ class GitHubIssueSource:
         self._timeout = timeout
 
     def _get(self, path: str) -> object:
+        token = self._token() if callable(self._token) else self._token
+        if not token:
+            raise ValueError("A GitHub token is required")
         request = Request(
             f"https://api.github.com{path}",
             headers={
                 "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {self._token}",
+                "Authorization": f"Bearer {token}",
                 "X-GitHub-Api-Version": "2026-03-10",
             },
         )

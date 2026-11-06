@@ -70,3 +70,17 @@ The token must be a GitHub App installation token limited to the claimed reposit
 Only `ready_for_review` implementation runs are eligible. The publisher verifies the claim, repository scope, base SHA, and current diff hash before committing the run worktree. It pushes the fixed `agent/<run-id>` branch, then finds or creates a PR. SQLite records the commit and PR identity. Retrying the same run ID reuses them, including after a network timeout; a merged PR is returned without recreating a deleted branch. A conflicting remote branch, unrelated PR, changed worktree, cancelled claim, or investigation result is rejected.
 
 The PR links the issue and includes the base SHA, validated diff hash, check outcomes, planner risks, and unverified work. `feat:` and `fix:` titles add the repository's release commit override. The publisher does not merge or approve the PR.
+
+## GitHub issue webhooks
+
+`engineer-webhooks` serves `POST /webhooks/github` on `127.0.0.1:8080` by default. Put an HTTPS reverse proxy in front of it and configure the GitHub App webhook URL and secret there.
+
+```bash
+ENGINEER_GITHUB_TOKEN_FILE=/run/secrets/github-installation-token \
+  ENGINEER_WEBHOOK_SECRET=... \
+  uv run --locked engineer-webhooks jcsduncan engineering-orchestrator 12345
+```
+
+The receiver verifies `X-Hub-Signature-256` against the original request bytes, checks the installation and repository, and persists the `X-GitHub-Delivery` ID before returning `202`. It does not fetch issues or run a model in the HTTP handler. Payloads above 1 MiB are rejected. Duplicate delivery IDs are acknowledged once and do not create another task.
+
+A separate processor retries persisted deliveries after a crash or API failure. It fetches the current issue through the same `reconcile` operation used by `engineer-issues`; event action and issue text in the webhook are only hints. The server also scans all eligible issues every 300 seconds by default (`--scan-interval`) to recover missed webhooks. Claims and cancellations remain available through the `engineer-issues` command and the claim store. The token file is reread for each API request so an external GitHub App credential process can rotate its short-lived installation token. `ENGINEER_GITHUB_TOKEN` is accepted for a single token.

@@ -18,6 +18,7 @@ engineer-issues = "engineer.intake_cli:main"
 engineer-publish = "engineer.publication_cli:main"
 engineer-bench = "engineer.bench_cli:main"
 engineer-bench-measure = "engineer.bench_cli:measure_main"
+engineer-webhooks = "engineer.webhook_cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
