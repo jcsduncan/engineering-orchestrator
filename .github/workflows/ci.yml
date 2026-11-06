@@ -37,6 +37,7 @@ jobs:
       - run: uv build
       - run: docker build -t engineering-orchestrator:ci .
       - run: docker run --rm engineering-orchestrator:ci --help
+      - run: ENGINEER_TEST_IMAGE=engineering-orchestrator:ci uv run --locked pytest -q tests/test_container.py
 
   test:
     name: test (Python ${{ matrix.python }})

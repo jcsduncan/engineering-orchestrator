@@ -4,7 +4,7 @@ Engineering tasks run through a local planning model, a coding worker, and expli
 
 ## Use
 
-Requires Python 3.11+, Git, and a local OpenAI-compatible model endpoint. Executing a task also requires the selected coding CLI.
+Planning requires Python 3.11+, Git, and a local OpenAI-compatible model endpoint. Executing a task also requires Docker and a local container image with the selected coding CLI and validation tools.
 
 ```bash
 uv sync --locked --dev
@@ -18,11 +18,12 @@ Pass a coding CLI and checks to execute a task:
 ```bash
 uv run --locked engineer "Fix the failing test" \
   --repo /path/to/repo \
+  --image your-worker-image \
   --worker 'qwen --approval-mode auto -p' \
   --check 'uv run --locked pytest -q'
 ```
 
-The worker runs on the host in a new worktree. Use trusted repositories and worker commands. No model is bundled.
+The worker and checks run in disposable containers with the worktree mounted. No model or worker image is bundled.
 The `--check` command runs in the target repository, so use that repository's test command.
 For multiple checks, pass a list such as `--check='["uv run --locked ruff check .", "uv run --locked pytest -q"]'`.
 

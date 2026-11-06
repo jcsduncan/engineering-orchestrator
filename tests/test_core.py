@@ -246,6 +246,42 @@ def test_unsupported_untracked_entry_preserves_worker_result(tmp_path):
     assert result["changed_files"]
 
 
+@pytest.mark.parametrize("tamper_in_check", [False, True])
+def test_changed_git_pointer_is_rejected_before_host_git(tmp_path, tamper_in_check):
+    class Planner:
+        info = ProviderInfo("test-planner", {})
+
+        def plan(self, _task):
+            return Plan("Task", [], [], [])
+
+    class Worker:
+        info = ProviderInfo("test-worker", {})
+
+        def execute(self, _prompt, worktree, _run_id):
+            if not tamper_in_check:
+                (worktree / ".git").write_text("gitdir: /etc\n")
+            return WorkerResult(0, "", "")
+
+    class CheckRunner:
+        def execute(self, _command, worktree, _run_id, _timeout):
+            (worktree / ".git").write_text("gitdir: /etc\n")
+            return WorkerResult(0, "", "")
+
+    state_dir = tmp_path / "state"
+    with pytest.raises(ValueError, match="Worker changed Git worktree metadata pointer"):
+        execute_task(
+            task="Task",
+            repo=make_repo(tmp_path),
+            planner=Planner(),
+            worker=Worker(),
+            checks=["echo ok"],
+            check_runner=CheckRunner(),
+            state_dir=state_dir,
+        )
+    with sqlite3.connect(state_dir / "runs.sqlite3") as db:
+        assert db.execute("SELECT status FROM runs").fetchone()[0] == "failed"
+
+
 def test_invalid_planning_provider_output_is_rejected(tmp_path):
     class Planner:
         info = ProviderInfo("broken", {})

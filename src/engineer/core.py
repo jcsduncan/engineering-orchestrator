@@ -10,7 +10,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import BinaryIO
 
+from .container import ContainerCheckRunner, ContainerRuntime, ContainerWorker
 from .providers import (
+    CheckRunner,
     CommandWorker,
     OpenAICompatiblePlanner,
     Plan,
@@ -79,11 +81,37 @@ def _acquire_run_lock(state_dir: Path, run_id: str) -> BinaryIO:
     return handle
 
 
+def _registered_git_pointer(repo: Path, worktree: Path) -> bool:
+    """Check a worktree pointer against metadata owned by the target repository."""
+    pointer = worktree / ".git"
+    if pointer.is_symlink() or not pointer.is_file():
+        return False
+    try:
+        content = pointer.read_text().strip()
+        if not content.startswith("gitdir: "):
+            return False
+        target = Path(content.removeprefix("gitdir: "))
+        if not target.is_absolute():
+            target = worktree / target
+        target = target.resolve(strict=True)
+        common_dir = Path(
+            git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        ).resolve(strict=True)
+        if not target.is_relative_to(common_dir / "worktrees"):
+            return False
+        back_pointer = Path((target / "gitdir").read_text().strip()).resolve(strict=True)
+        return back_pointer == pointer.resolve(strict=True)
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return False
+
+
 def _ensure_worktree(repo: Path, worktree: Path, branch: str, base_sha: str) -> None:
     """Reuse or create the recorded clean worktree at its pinned commit."""
     if worktree.is_symlink():
         raise RuntimeError("Run worktree cannot be a symlink")
     if worktree.exists():
+        if not _registered_git_pointer(repo, worktree):
+            raise RuntimeError("Existing run worktree has an invalid Git metadata pointer")
         try:
             root = Path(git(worktree, "rev-parse", "--show-toplevel")).resolve()
             actual_branch = git(worktree, "symbolic-ref", "--short", "HEAD")
@@ -138,6 +166,10 @@ def _interrupted_result(store: RunStore, record: dict) -> dict:
     if worktree.is_symlink():
         result["worktree_error"] = "Run worktree is a symlink"
     elif worktree.exists():
+        if not _registered_git_pointer(Path(record["repo"]), worktree):
+            result["worktree_error"] = "Run worktree Git metadata pointer is invalid"
+            store.transition(record["id"], record["status"], "needs_review", result=result)
+            return result
         try:
             result["changed_files"] = git(worktree, "status", "--short").splitlines()
         except subprocess.CalledProcessError:
@@ -160,17 +192,38 @@ def run_task(
     worker_timeout: int = 1800,
     check_timeout: int = 300,
     run_id: str | None = None,
+    execution_image: str | None = None,
+    container_cpus: int = 2,
+    container_memory_mb: int = 2048,
+    container_pids: int = 128,
+    container_network: str = "none",
 ) -> dict:
-    """Execute a task with the default local planner and command worker."""
+    """Execute with the default planner and a host or container command worker."""
+    if execution_image:
+        git_metadata = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        runtime = ContainerRuntime(
+            execution_image,
+            git_metadata,
+            cpus=container_cpus,
+            memory_mb=container_memory_mb,
+            pids=container_pids,
+            network=container_network,
+        ).resolve_image()
+        worker_provider: WorkerProvider = ContainerWorker(runtime, tuple(worker), worker_timeout)
+        check_runner: CheckRunner | None = ContainerCheckRunner(runtime)
+    else:
+        worker_provider = CommandWorker(tuple(worker), worker_timeout)
+        check_runner = None
     return execute_task(
         task=task,
         repo=repo,
         planner=OpenAICompatiblePlanner(model, base_url),
-        worker=CommandWorker(tuple(worker), worker_timeout),
+        worker=worker_provider,
         checks=checks,
         state_dir=state_dir,
         check_timeout=check_timeout,
         run_id=run_id,
+        check_runner=check_runner,
     )
 
 
@@ -184,6 +237,7 @@ def execute_task(
     state_dir: Path,
     check_timeout: int = 300,
     run_id: str | None = None,
+    check_runner: CheckRunner | None = None,
 ) -> dict:
     """Execute or safely resume a task with independently selected providers."""
     repo = Path(git(repo, "rev-parse", "--show-toplevel"))
@@ -255,6 +309,13 @@ def execute_task(
             record = store.get(run_id)
         plan = Plan(**record["plan"])
         _ensure_worktree(repo, worktree, branch, base_sha)
+        git_pointer = (worktree / ".git").read_bytes()
+
+        def verify_git_pointer() -> None:
+            pointer = worktree / ".git"
+            if pointer.is_symlink() or not pointer.is_file() or pointer.read_bytes() != git_pointer:
+                raise ValueError("Worker changed Git worktree metadata pointer")
+
         store.transition(run_id, "workspace_pending", "executing")
         prompt = (
             f"Task:\n{task}\n\nPlan from the local controller (verify against code):\n"
@@ -292,6 +353,9 @@ def execute_task(
             checks if outcome.exit_code == 0 else [],
             check_timeout,
             on_check=save_check,
+            runner=check_runner,
+            run_id=run_id,
+            git_guard=verify_git_pointer,
         )
         progress["validation"] = {
             "diff_sha256_before": validation.diff_sha256_before,
@@ -299,6 +363,7 @@ def execute_task(
             "status": validation.status,
             "reason": validation.reason,
         }
+        verify_git_pointer()
         diff = git(worktree, "status", "--short")
         result = {**progress, "changed_files": diff.splitlines()}
         status = (

@@ -21,6 +21,11 @@ def run(
     state_dir: str | None = None,
     worker_timeout: int = 1800,
     run_id: str | None = None,
+    image: str | None = None,
+    container_cpus: int = 2,
+    container_memory_mb: int = 2048,
+    container_pids: int = 128,
+    container_network: str = "none",
 ) -> None:
     """Plan a task locally, or execute it with a coding worker and validation commands.
 
@@ -43,6 +48,8 @@ def run(
             checks = check
         else:
             raise SystemExit("--check must be a command or a list of commands")
+        if not image:
+            raise SystemExit("Set --image to a local worker image for container execution")
         result = run_task(
             task=task,
             repo=Path(repo) if repo else Path.cwd(),
@@ -55,6 +62,11 @@ def run(
             else Path.home() / ".local/share/engineering-orchestrator",
             worker_timeout=worker_timeout,
             run_id=run_id,
+            execution_image=image,
+            container_cpus=container_cpus,
+            container_memory_mb=container_memory_mb,
+            container_pids=container_pids,
+            container_network=container_network,
         )
         print(json.dumps(result, indent=2))
     else:

@@ -29,6 +29,8 @@ def test_fire_accepts_checks_and_paths(monkeypatch, capsys, tmp_path):
             "http://localhost:11434/v1",
             "--worker",
             "qwen -p",
+            "--image",
+            "test-image",
             '--check=["ruff check .", "pytest -q"]',
             "--state-dir",
             str(tmp_path / "state"),
@@ -44,6 +46,7 @@ def test_fire_accepts_checks_and_paths(monkeypatch, capsys, tmp_path):
     assert captured["checks"] == ["ruff check .", "pytest -q"]
     assert captured["worker_timeout"] == 60
     assert captured["run_id"] == "task-123"
+    assert captured["execution_image"] == "test-image"
     assert json.loads(capsys.readouterr().out) == {"status": "ready_for_review"}
 
 
@@ -57,7 +60,17 @@ def test_fire_accepts_numeric_run_id(monkeypatch, capsys):
     monkeypatch.setattr(cli, "run_task", fake_run_task)
     fire.Fire(
         cli.run,
-        command=["Fix test", "--model", "local-test", "--worker", "qwen -p", "--run-id", "12345"],
+        command=[
+            "Fix test",
+            "--model",
+            "local-test",
+            "--worker",
+            "qwen -p",
+            "--image",
+            "test-image",
+            "--run-id",
+            "12345",
+        ],
     )
 
     assert captured["run_id"] == "12345"
@@ -98,6 +111,12 @@ def test_cli_requires_model(monkeypatch):
 def test_run_id_requires_worker():
     with pytest.raises(SystemExit, match="^--run-id requires --worker$"):
         cli.run("Inspect code", model="local-test", run_id="task-123")
+
+
+def test_cli_requires_container_image(monkeypatch):
+    monkeypatch.setattr(cli, "run_task", lambda **_kwargs: pytest.fail("worker must not run"))
+    with pytest.raises(SystemExit, match="Set --image to a local worker image"):
+        cli.run("Fix test", model="local-test", worker="qwen -p")
 
 
 @pytest.mark.parametrize("alias", ["--check", "--c", "-c", "-check"])

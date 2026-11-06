@@ -127,6 +127,24 @@ def test_interrupted_worker_is_not_repeated(tmp_path):
     assert run(repo, state_dir, planner, worker) == result
 
 
+def test_interrupted_worker_with_changed_git_pointer_is_not_inspected(tmp_path):
+    repo = make_repo(tmp_path)
+    state_dir = tmp_path / "state"
+
+    class InterruptedWorker(Worker):
+        def execute(self, _prompt, worktree, _run_id):
+            (worktree / ".git").write_text("gitdir: /etc\n")
+            raise KeyboardInterrupt
+
+    worker = InterruptedWorker()
+    with pytest.raises(KeyboardInterrupt):
+        run(repo, state_dir, Planner(), worker)
+    result = run(repo, state_dir, Planner(), worker)
+    assert result["status"] == "needs_review"
+    assert result["worktree_error"] == "Run worktree Git metadata pointer is invalid"
+    assert "changed_files" not in result
+
+
 def test_interrupted_planner_is_not_repeated(tmp_path):
     repo = make_repo(tmp_path)
     state_dir = tmp_path / "state"

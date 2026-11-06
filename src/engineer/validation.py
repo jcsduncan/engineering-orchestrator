@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict
 
+from .providers import CheckRunner, WorkerResult
+
 
 class CheckResult(TypedDict):
     command: str
@@ -78,10 +80,15 @@ def validate_worktree(
     timeout: int,
     *,
     on_check: Callable[[CheckResult], None] | None = None,
+    runner: CheckRunner | None = None,
+    run_id: str = "",
+    git_guard: Callable[[], None] | None = None,
 ) -> ValidationEvidence:
     """Run checks in order and bind their results to the final worktree diff."""
     results = []
     try:
+        if git_guard is not None:
+            git_guard()
         before = diff_sha256(worktree)
     except UnsupportedDiffEntry as exc:
         return ValidationEvidence(results, None, None, "invalidated", str(exc))
@@ -92,19 +99,27 @@ def validate_worktree(
         started_at = datetime.now(UTC).isoformat()
         started = time.monotonic()
         try:
-            completed = subprocess.run(
-                argv,
-                check=False,
-                cwd=worktree,
-                capture_output=True,
-                text=True,
-                errors="replace",
-                timeout=timeout,
-            )
-            exit_code = completed.returncode
-            stdout = completed.stdout[-20000:]
-            stderr = completed.stderr[-20000:]
-            status = "passed" if exit_code == 0 else "failed"
+            if runner is None:
+                completed = subprocess.run(
+                    argv,
+                    check=False,
+                    cwd=worktree,
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                    timeout=timeout,
+                )
+                exit_code = completed.returncode
+                stdout = completed.stdout[-20000:]
+                stderr = completed.stderr[-20000:]
+            else:
+                outcome = runner.execute(argv, worktree, run_id, timeout)
+                if not isinstance(outcome, WorkerResult):
+                    raise ValueError("Check runner returned an invalid WorkerResult")
+                exit_code = outcome.exit_code
+                stdout = outcome.stdout[-20000:]
+                stderr = outcome.stderr[-20000:]
+            status = "passed" if exit_code == 0 else "timed_out" if exit_code is None else "failed"
         except subprocess.TimeoutExpired:
             exit_code = None
             stdout = ""
@@ -131,6 +146,8 @@ def validate_worktree(
         if status != "passed":
             break
     try:
+        if git_guard is not None:
+            git_guard()
         after = diff_sha256(worktree)
     except UnsupportedDiffEntry as exc:
         return ValidationEvidence(results, before, None, "invalidated", str(exc))
