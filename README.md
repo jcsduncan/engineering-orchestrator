@@ -29,9 +29,12 @@ The worker runs on the host in a new worktree. Use trusted repositories and work
 - [System design](docs/HLD.md)
 - [Runtime and configuration](docs/runtime.md)
 - [Architecture decisions](docs/adr/README.md)
+- [Repository tooling](docs/tooling.md)
 
 ## Test
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
+
+Licensed under [Apache-2.0](LICENSE).

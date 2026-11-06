@@ -1,0 +1,16 @@
+site_name: Engineering Orchestrator
+site_url: https://jcsduncan.github.io/engineering-orchestrator/
+repo_url: https://github.com/jcsduncan/engineering-orchestrator
+theme:
+  name: mkdocs
+nav:
+  - Home: index.md
+  - High-level design: HLD.md
+  - Runtime: runtime.md
+  - Tooling: tooling.md
+  - Decisions:
+      - Index: adr/README.md
+      - Local orchestration: adr/001-local-orchestrator.md
+      - Controller workflow: adr/002-controller-owned-workflow.md
+      - Execution boundary: adr/003-execution-publication-boundary.md
+      - Issue intake: adr/004-issue-intake.md

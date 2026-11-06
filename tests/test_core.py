@@ -16,8 +16,14 @@ class PlannerHandler(BaseHTTPRequestHandler):
         assert self.path == "/v1/chat/completions"
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert request["model"] == "local-test"
-        content = json.dumps({"objective": "Make a change", "steps": ["Inspect"],
-                              "checks": ["Run tests"], "risks": []})
+        content = json.dumps(
+            {
+                "objective": "Make a change",
+                "steps": ["Inspect"],
+                "checks": ["Run tests"],
+                "risks": [],
+            }
+        )
         response = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -51,22 +57,40 @@ class CoreTest(unittest.TestCase):
             repo = root / "repo"
             repo.mkdir()
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+                check=True,
+            )
             subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
             (repo / "README.md").write_text("before\n")
             subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
             subprocess.run(["git", "-C", str(repo), "commit", "-qm", "initial"], check=True)
-            worker = [sys.executable, "-c", "from pathlib import Path; Path('README.md').write_text('after\\n')", "ignored"]
+            worker = [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path('README.md').write_text('after\\n')",
+                "ignored",
+            ]
             # run_task appends the task prompt after the worker prefix.
-            result = run_task(task="Update readme", repo=repo, model="local-test",
-                              base_url=self.base_url, worker=worker,
-                              checks=[f"{sys.executable} -c 'from pathlib import Path; assert Path(\"README.md\").read_text() == \"after\\n\"'"],
-                              state_dir=root / "state")
+            result = run_task(
+                task="Update readme",
+                repo=repo,
+                model="local-test",
+                base_url=self.base_url,
+                worker=worker,
+                checks=[
+                    f'{sys.executable} -c \'from pathlib import Path; assert Path("README.md").read_text() == "after\\n"\''
+                ],
+                state_dir=root / "state",
+            )
             self.assertEqual(result["status"], "ready_for_review")
             self.assertTrue((Path(result["worktree"]) / "README.md").exists())
             self.assertEqual((repo / "README.md").read_text(), "before\n")
             with sqlite3.connect(root / "state/runs.sqlite3") as db:
-                self.assertEqual(db.execute("SELECT status FROM runs").fetchone()[0], "ready_for_review")
+                self.assertEqual(
+                    db.execute("SELECT status FROM runs").fetchone()[0],
+                    "ready_for_review",
+                )
 
 
 if __name__ == "__main__":
