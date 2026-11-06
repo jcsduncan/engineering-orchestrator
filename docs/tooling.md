@@ -13,7 +13,7 @@
 | Release Please | Conventional commits generate release PRs and GitHub releases. | GitHub Actions must be allowed to create PRs. |
 | MkDocs | CI builds docs; GitHub Pages publishes them. | Pages source must be GitHub Actions. |
 | GHCR | A release publishes the CLI image to `ghcr.io/jcsduncan/engineering-orchestrator`. | Image visibility is managed in GHCR. |
-| CodeRabbit | Reviews pull requests. | Install its GitHub App on this public repository. |
+| CodeRabbit | Reviews pull requests. | GitHub App installed for this repository. |
 
 The container includes the planning CLI and Git. It does not bundle a coding worker or a model server. Supply a reachable model endpoint with `ENGINEER_BASE_URL`.
 
