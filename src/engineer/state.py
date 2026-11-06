@@ -7,14 +7,20 @@ from pathlib import Path
 from typing import Any
 
 ACTIVE_STATES = {"accepted", "planning", "workspace_pending", "executing", "validating"}
-FINAL_STATES = {"ready_for_review", "needs_review", "failed"}
+FINAL_STATES = {"ready_for_review", "report_for_review", "inconclusive", "needs_review", "failed"}
 TRANSITIONS = {
     "running": {"needs_review", "failed"},
     "accepted": {"planning", "failed"},
     "planning": {"workspace_pending", "needs_review", "failed"},
     "workspace_pending": {"executing", "failed"},
     "executing": {"validating", "needs_review", "failed"},
-    "validating": {"ready_for_review", "needs_review", "failed"},
+    "validating": {
+        "ready_for_review",
+        "report_for_review",
+        "inconclusive",
+        "needs_review",
+        "failed",
+    },
 }
 _UNSET = object()
 
@@ -36,7 +42,8 @@ class RunStore:
                     base_sha TEXT NOT NULL, branch TEXT NOT NULL, worktree TEXT NOT NULL,
                     status TEXT NOT NULL, task TEXT NOT NULL, plan_json TEXT NOT NULL,
                     result_json TEXT, providers_json TEXT NOT NULL DEFAULT '{}',
-                    snapshot_json TEXT NOT NULL DEFAULT '{}'
+                    snapshot_json TEXT NOT NULL DEFAULT '{}',
+                    mode TEXT NOT NULL DEFAULT 'implementation'
                 )"""
             )
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(runs)")}
@@ -45,6 +52,10 @@ class RunStore:
                     self.db.execute(
                         f"ALTER TABLE runs ADD COLUMN {column} TEXT NOT NULL DEFAULT '{{}}'"
                     )
+            if "mode" not in columns:
+                self.db.execute(
+                    "ALTER TABLE runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'implementation'"
+                )
             self.db.execute(
                 """CREATE TABLE IF NOT EXISTS run_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,6 +92,7 @@ class RunStore:
         task: str,
         snapshot: dict[str, Any],
         providers: dict[str, Any],
+        mode: str = "implementation",
     ) -> None:
         """Create an accepted run and its first event atomically."""
         now = int(time.time())
@@ -88,8 +100,8 @@ class RunStore:
             self.db.execute(
                 """INSERT INTO runs
                 (id, created_at, repo, base_sha, branch, worktree, status, task,
-                 plan_json, result_json, providers_json, snapshot_json)
-                VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?, '{}', NULL, ?, ?)""",
+                 plan_json, result_json, providers_json, snapshot_json, mode)
+                VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?, '{}', NULL, ?, ?, ?)""",
                 (
                     run_id,
                     now,
@@ -100,6 +112,7 @@ class RunStore:
                     task,
                     json.dumps(providers),
                     json.dumps(snapshot),
+                    mode,
                 ),
             )
             self.db.execute(

@@ -38,6 +38,8 @@ def test_fire_accepts_checks_and_paths(monkeypatch, capsys, tmp_path):
             "60",
             "--run-id",
             "task-123",
+            "--mode",
+            "investigation",
         ],
     )
 
@@ -47,6 +49,7 @@ def test_fire_accepts_checks_and_paths(monkeypatch, capsys, tmp_path):
     assert captured["worker_timeout"] == 60
     assert captured["run_id"] == "task-123"
     assert captured["execution_image"] == "test-image"
+    assert captured["mode"] == "investigation"
     assert json.loads(capsys.readouterr().out) == {"status": "ready_for_review"}
 
 
@@ -111,6 +114,12 @@ def test_cli_requires_model(monkeypatch):
 def test_run_id_requires_worker():
     with pytest.raises(SystemExit, match="^--run-id requires --worker$"):
         cli.run("Inspect code", model="local-test", run_id="task-123")
+
+
+@pytest.mark.parametrize("mode", ["other", []])
+def test_cli_rejects_invalid_mode(mode):
+    with pytest.raises(SystemExit, match="^--mode must be implementation or investigation$"):
+        cli.run("Inspect code", mode=mode)
 
 
 def test_cli_requires_container_image(monkeypatch):
