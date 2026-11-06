@@ -6,11 +6,14 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .providers import ProviderInfo, WorkerResult
+
+_REMOVAL_WAIT_SECONDS = 10
 
 
 @dataclass(frozen=True)
@@ -212,23 +215,28 @@ class ContainerRuntime:
                     ["docker", "rm", "-f", name], capture_output=True, check=False, timeout=10
                 )
                 if removal.returncode != 0:
-                    remaining = subprocess.run(
-                        [
-                            "docker",
-                            "ps",
-                            "-a",
-                            "--filter",
-                            f"name=^/{name}$",
-                            "--format",
-                            "{{.ID}}",
-                        ],
-                        capture_output=True,
-                        check=True,
-                        text=True,
-                        timeout=10,
-                    )
-                    if remaining.stdout.strip():
-                        raise RuntimeError("Container is still running after cleanup")
+                    deadline = time.monotonic() + _REMOVAL_WAIT_SECONDS
+                    while True:
+                        remaining = subprocess.run(
+                            [
+                                "docker",
+                                "ps",
+                                "-a",
+                                "--filter",
+                                f"name=^/{name}$",
+                                "--format",
+                                "{{.ID}}",
+                            ],
+                            capture_output=True,
+                            check=True,
+                            text=True,
+                            timeout=max(0.1, min(2, deadline - time.monotonic())),
+                        )
+                        if not remaining.stdout.strip():
+                            break
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("Container is still running after cleanup")
+                        time.sleep(min(0.2, deadline - time.monotonic()))
             except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
                 cleanup_error = exc
             if process.poll() is None:

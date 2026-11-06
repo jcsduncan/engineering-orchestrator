@@ -147,7 +147,8 @@ def test_invalid_container_limits_are_rejected(kwargs):
         ContainerRuntime("image", Path("/tmp"), **kwargs)
 
 
-def test_runner_bounds_output_and_removes_container(worktree, monkeypatch):
+@pytest.mark.parametrize("auto_removing", [False, True])
+def test_runner_bounds_output_and_removes_container(worktree, monkeypatch, auto_removing):
     import engineer.container as container
 
     commands = []
@@ -157,7 +158,11 @@ def test_runner_bounds_output_and_removes_container(worktree, monkeypatch):
             return subprocess.CompletedProcess(command, 0, "sha1\n", "")
         if command[:3] == ["docker", "rm", "-f"]:
             commands.append(command)
-            return subprocess.CompletedProcess(command, 0, b"", b"")
+            return subprocess.CompletedProcess(command, int(auto_removing), b"", b"")
+        if command[:2] == ["docker", "ps"]:
+            commands.append(command)
+            stdout = "container-id\n" if commands.count(command) == 1 else ""
+            return subprocess.CompletedProcess(command, 0, stdout, "")
         pytest.fail(f"Unexpected command: {command}")
 
     class Process:
@@ -177,6 +182,8 @@ def test_runner_bounds_output_and_removes_container(worktree, monkeypatch):
     )
     assert result == ContainerResult(0, "x" * 100, "y" * 100)
     assert commands and commands[0][0:3] == ["docker", "rm", "-f"]
+    if auto_removing:
+        assert len(commands) == 3
 
 
 @pytest.mark.parametrize("cleanup_mode", ["timeout", "still_running"])
@@ -202,6 +209,8 @@ def test_timeout_kills_docker_cli_when_cleanup_fails(worktree, monkeypatch, clea
             self.killed = True
 
     process = Process()
+    if cleanup_mode == "still_running":
+        monkeypatch.setattr(container, "_REMOVAL_WAIT_SECONDS", 0)
 
     def fail_cleanup(command, **kwargs):
         if command[0] == "git":
