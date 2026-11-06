@@ -3,6 +3,7 @@
 | Tool | Repository configuration | Account setup |
 | --- | --- | --- |
 | GitHub Actions | CI runs lint, tests, coverage, package build, and docs build. | None |
+| Main branch ruleset | Changes use a PR with passing quality and Python tests; review threads must be resolved. | None |
 | Ruff and pre-commit | `uv run pre-commit run --all-files` | None |
 | CodeQL | GitHub default setup | None |
 | Dependabot | Weekly uv, Actions, and Docker updates; alerts and security updates | None |
