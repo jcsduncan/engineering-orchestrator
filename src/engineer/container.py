@@ -87,6 +87,7 @@ class ContainerRuntime:
         name: str,
         safe_config: Path,
         worktree_configs: tuple[Path, ...] = (),
+        readonly_worktree: bool = False,
     ) -> list[str]:
         if not argv or not argv[0]:
             raise ValueError("Container command is required")
@@ -126,7 +127,7 @@ class ContainerRuntime:
             "--tmpfs",
             "/tmp:rw,nosuid,nodev,size=256m",
             "--mount",
-            _mount(worktree),
+            _mount(worktree, readonly=readonly_worktree),
             "--mount",
             _mount(git_dir, readonly=True),
             "--mount",
@@ -154,7 +155,14 @@ class ContainerRuntime:
         return command
 
     def run(
-        self, argv: list[str], worktree: Path, run_id: str, timeout: int, output_limit: int
+        self,
+        argv: list[str],
+        worktree: Path,
+        run_id: str,
+        timeout: int,
+        output_limit: int,
+        *,
+        readonly_worktree: bool = False,
     ) -> ContainerResult:
         if type(timeout) is not int or timeout <= 0:
             raise ValueError("Container timeout must be a positive integer")
@@ -186,7 +194,15 @@ class ContainerRuntime:
             worktree_configs = tuple((git_dir / "worktrees").glob("*/config.worktree"))
             if any(config.is_symlink() for config in worktree_configs):
                 raise ValueError("Git worktree config cannot be a symlink")
-            command = self._command(argv, worktree, run_id, name, safe_config, worktree_configs)
+            command = self._command(
+                argv,
+                worktree,
+                run_id,
+                name,
+                safe_config,
+                worktree_configs,
+                readonly_worktree,
+            )
             return self._invoke(command, name, run_id, timeout, output_limit)
 
     def _invoke(

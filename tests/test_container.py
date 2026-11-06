@@ -99,6 +99,22 @@ def test_git_metadata_mount_does_not_follow_worktree_pointer(worktree):
     )
 
 
+def test_oracle_mounts_worktree_readonly(worktree):
+    runtime = ContainerRuntime("test-image", worktree.parent / "repo/.git")
+    safe_config = worktree.parent / "safe-config"
+    safe_config.write_text("[core]\n")
+    command = runtime._command(
+        ["python", "-B", "-c", "pass"],
+        worktree,
+        "run-1",
+        "test-name",
+        safe_config,
+        readonly_worktree=True,
+    )
+    mounts = [command[index + 1] for index, item in enumerate(command[:-1]) if item == "--mount"]
+    assert mounts[0] == f"type=bind,source={worktree},target={worktree},readonly"
+
+
 def test_host_diff_uses_pinned_git_dir(worktree):
     git_dir = Path(
         subprocess.check_output(
@@ -298,6 +314,23 @@ Path('README.md').write_text('after\\n')
         text=True,
     )
     assert not remaining.stdout.strip()
+
+
+@pytest.mark.skipif(not os.getenv("ENGINEER_TEST_IMAGE"), reason="No local test image configured")
+def test_oracle_container_cannot_modify_worktree(worktree):
+    runtime = ContainerRuntime(
+        os.environ["ENGINEER_TEST_IMAGE"], worktree.parent / "repo/.git"
+    ).resolve_image()
+    result = runtime.run(
+        ["python", "-B", "-c", "from pathlib import Path; Path('README.md').write_text('changed')"],
+        worktree,
+        "oracle-readonly",
+        30,
+        2000,
+        readonly_worktree=True,
+    )
+    assert result.exit_code != 0
+    assert (worktree / "README.md").read_text() == "before\n"
 
 
 @pytest.mark.skipif(not os.getenv("ENGINEER_TEST_IMAGE"), reason="No local test image configured")
