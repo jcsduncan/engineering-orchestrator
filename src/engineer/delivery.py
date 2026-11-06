@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from .intake import IssueClaimStore, TaskSnapshot
 from .publication import PublicationIssue, PublicationRemote, publish_run
@@ -17,7 +18,17 @@ from .state import RunStore
 
 DELIVERABLE = {"ready_for_review", "report_for_review", "inconclusive"}
 REPORTS = {"report_for_review", "inconclusive"}
-TERMINAL = {"published", "report_ready", "suppressed"}
+TERMINAL = {"published", "report_ready", "suppressed", "blocked"}
+
+
+class DeliveryInvariantError(ValueError):
+    """Persisted identities or evidence disagree and cannot be retried unchanged."""
+
+
+class DeliveryRemote(PublicationRemote, Protocol):
+    """Publication remote that can recheck issue opt-in before writing."""
+
+    def issue_eligible(self, issue: PublicationIssue) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -43,7 +54,8 @@ class RunDeliveryStore:
                     run_id TEXT PRIMARY KEY,
                     run_status TEXT NOT NULL,
                     status TEXT NOT NULL CHECK (status IN
-                        ('attempting', 'failed', 'published', 'report_ready', 'suppressed')),
+                        ('attempting', 'failed', 'published',
+                         'report_ready', 'suppressed', 'blocked')),
                     attempts INTEGER NOT NULL,
                     stage TEXT NOT NULL,
                     pull_url TEXT,
@@ -53,9 +65,11 @@ class RunDeliveryStore:
             )
 
     def close(self) -> None:
+        """Close this delivery store connection."""
         self.db.close()
 
     def get(self, run_id: str) -> DeliveryResult | None:
+        """Read one delivery checkpoint."""
         row = self.db.execute("SELECT * FROM run_deliveries WHERE run_id = ?", (run_id,)).fetchone()
         if row is None:
             return None
@@ -92,6 +106,7 @@ class RunDeliveryStore:
         return self.get(run_id)
 
     def stage(self, run_id: str, stage: str) -> None:
+        """Record the current side-effect boundary for an active attempt."""
         with self.db:
             self.db.execute(
                 """UPDATE run_deliveries SET stage = ?, updated_at = ?
@@ -138,9 +153,9 @@ def _run_record(state_dir: Path, queue: RunQueue, run_id: str) -> tuple[dict, Ta
     queued = queue.get(run_id)
     outcome = queue.result(run_id)
     if queued is None or queued.status != "completed" or not isinstance(outcome, dict):
-        raise ValueError("Run has no completed queue outcome")
+        raise DeliveryInvariantError("Run has no completed queue outcome")
     if outcome.get("status") != "completed":
-        raise ValueError("Queue result is not a completed outcome")
+        raise DeliveryInvariantError("Queue result is not a completed outcome")
     claims = IssueClaimStore(state_dir / "runs.sqlite3")
     runs = RunStore(state_dir / "runs.sqlite3")
     try:
@@ -149,19 +164,21 @@ def _run_record(state_dir: Path, queue: RunQueue, run_id: str) -> tuple[dict, Ta
     finally:
         claims.close()
         runs.close()
+    if claim is not None and claim.status == "claimed":
+        raise ValueError("Issue claim finalization is pending")
     if claim is None or claim.status != "completed" or claim.snapshot != queued.snapshot:
-        raise ValueError("Completed issue claim does not match queued run")
+        raise DeliveryInvariantError("Completed issue claim does not match queued run")
     if (
         record is None
         or record["status"] != outcome.get("run_status")
         or record["result"] is None
         or record["result"].get("status") != record["status"]
     ):
-        raise ValueError("Queue outcome does not match persisted run evidence")
+        raise DeliveryInvariantError("Queue outcome does not match persisted run evidence")
     if record["status"] in REPORTS and record["mode"] != "investigation":
-        raise ValueError("Report outcome has the wrong run mode")
+        raise DeliveryInvariantError("Report outcome has the wrong run mode")
     if record["status"] == "ready_for_review" and record["mode"] != "implementation":
-        raise ValueError("Implementation outcome has the wrong run mode")
+        raise DeliveryInvariantError("Implementation outcome has the wrong run mode")
     return record, claim.snapshot
 
 
@@ -190,7 +207,7 @@ def _persisted_review(state_dir: Path, run_id: str, diff_sha: str) -> dict:
     finally:
         runs.close()
     if review is None or review["diff_sha256"] != diff_sha:
-        raise ValueError("Publication has no review of the validated diff")
+        raise DeliveryInvariantError("Publication has no review of the validated diff")
     return review
 
 
@@ -199,7 +216,7 @@ def deliver_run(
     queue: RunQueue,
     run_id: str,
     reviewer: ReviewProvider,
-    remote_factory: Callable[[TaskSnapshot], PublicationRemote],
+    remote_factory: Callable[[TaskSnapshot], DeliveryRemote],
 ) -> DeliveryResult | None:
     """Deliver one completed issue run, recovering from prior partial attempts."""
     state_dir = state_dir.expanduser().resolve()
@@ -259,6 +276,8 @@ def deliver_run(
                 require_review=True,
             )
             return deliveries.finished(run_id, "published", publication.pull_url)
+        except DeliveryInvariantError as exc:
+            return deliveries.finished(run_id, "blocked", reason=str(exc))
         except Exception as exc:
             detail = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else type(exc).__name__
             return deliveries.failed(run_id, stage, f"{type(exc).__name__}: {detail}")
@@ -270,13 +289,21 @@ def deliver_finalized(
     state_dir: Path,
     queue: RunQueue,
     reviewer: ReviewProvider,
-    remote_factory: Callable[[TaskSnapshot], PublicationRemote],
+    remote_factory: Callable[[TaskSnapshot], DeliveryRemote],
 ) -> list[DeliveryResult]:
     """Reconcile all persisted completed outcomes in a repeatable pass."""
     results = []
     for queued in queue.finalized():
         if queued.status == "completed":
-            result = deliver_run(state_dir, queue, queued.run_id, reviewer, remote_factory)
+            try:
+                result = deliver_run(state_dir, queue, queued.run_id, reviewer, remote_factory)
+            except Exception as exc:
+                result = DeliveryResult(
+                    queued.run_id,
+                    "failed",
+                    "unknown",
+                    error=f"Delivery pass could not record this run: {type(exc).__name__}",
+                )
             if result is not None:
                 results.append(result)
     return results

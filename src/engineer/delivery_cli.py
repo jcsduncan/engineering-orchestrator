@@ -61,6 +61,7 @@ def run(
 
 
 def main() -> None:
+    """Expose the delivery pass through Fire."""
     fire.Fire(run, name="engineer-deliver")
 
 

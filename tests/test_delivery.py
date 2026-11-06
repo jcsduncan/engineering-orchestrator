@@ -68,6 +68,7 @@ class Remote:
         self.creates = 0
         self.pushes = 0
         self.eligible = True
+        self.fail_push_once = False
 
     def issue_eligible(self, _issue):
         return self.eligible
@@ -89,6 +90,9 @@ class Remote:
 
     def push(self, _issue, worktree, _git_dir, _branch):
         self.pushes += 1
+        if self.fail_push_once:
+            self.fail_push_once = False
+            raise RuntimeError("push unavailable")
         self.sha = subprocess.run(
             ["git", "-C", str(worktree), "rev-parse", "HEAD"],
             check=True,
@@ -268,6 +272,21 @@ def test_issue_opt_out_suppresses_publication_terminally(tmp_path):
     assert remote.creates == remote.pushes == 0
 
 
+def test_opt_out_after_incomplete_push_does_not_create_pr(tmp_path):
+    state_dir, _, queue = make_run(tmp_path)
+    remote = Remote()
+    remote.fail_push_once = True
+    reviewer = Reviewer()
+    first = deliver_run(state_dir, queue, "issue-1", reviewer, lambda _snapshot: remote)
+    assert first.status == "failed"
+    remote.eligible = False
+    second = deliver_run(state_dir, queue, "issue-1", reviewer, lambda _snapshot: remote)
+    assert second.status == "suppressed"
+    assert remote.pushes == 1
+    assert remote.creates == 0
+    assert reviewer.calls == 1
+
+
 def test_existing_pr_is_recorded_after_issue_closes(tmp_path, monkeypatch):
     state_dir, _, queue = make_run(tmp_path)
     remote = Remote()
@@ -358,9 +377,16 @@ def test_claim_snapshot_mismatch_blocks_review_and_publication(tmp_path):
         reviewer,
         lambda _snapshot: pytest.fail("Claim mismatch reached publication"),
     )
-    assert failed.status == "failed"
+    assert failed.status == "blocked"
     assert "claim" in failed.error
     assert reviewer.calls == 0
+    queue.item = replace(queue.item, snapshot=replace(queue.item.snapshot, repository_id=42))
+    assert (
+        deliver_run(
+            state_dir, queue, "issue-1", reviewer, lambda _snapshot: pytest.fail("published")
+        )
+        == failed
+    )
 
 
 def test_advisory_review_error_is_disclosed_and_does_not_approve(tmp_path):
@@ -402,5 +428,46 @@ def test_queue_result_must_match_persisted_run(tmp_path):
     failed = deliver_run(
         state_dir, queue, "issue-1", Reviewer(), lambda _snapshot: pytest.fail("published")
     )
-    assert failed.status == "failed"
+    assert failed.status == "blocked"
     assert "persisted run evidence" in failed.error
+
+
+def test_claim_finalization_can_retry(tmp_path):
+    state_dir, _, queue = make_run(tmp_path)
+    with sqlite3.connect(state_dir / "runs.sqlite3") as db:
+        db.execute("UPDATE issue_claims SET status = 'claimed' WHERE run_id = 'issue-1'")
+    remote = Remote()
+    first = deliver_run(state_dir, queue, "issue-1", Reviewer(), lambda _snapshot: remote)
+    assert first.status == "failed"
+    assert "finalization is pending" in first.error
+    claims = IssueClaimStore(state_dir / "runs.sqlite3")
+    try:
+        claims.complete("issue-1")
+    finally:
+        claims.close()
+    assert (
+        deliver_run(state_dir, queue, "issue-1", Reviewer(), lambda _snapshot: remote).status
+        == "published"
+    )
+
+
+def test_one_corrupt_run_does_not_block_later_deliveries(tmp_path):
+    state_dir, _, queue = make_run(tmp_path)
+    original_result = queue.result
+    bad = replace(queue.item, run_id="bad-run")
+
+    def result(run_id):
+        if run_id == "bad-run":
+            raise sqlite3.OperationalError("corrupt queue row")
+        return original_result(run_id)
+
+    queue.finalized = lambda: [bad, queue.item]
+    queue.result = result
+    remote = Remote()
+    outcomes = deliver_finalized(state_dir, queue, Reviewer(), lambda _snapshot: remote)
+    assert [(item.run_id, item.status) for item in outcomes] == [
+        ("bad-run", "failed"),
+        ("issue-1", "published"),
+    ]
+    assert "OperationalError" in outcomes[0].error
+    assert remote.creates == 1
