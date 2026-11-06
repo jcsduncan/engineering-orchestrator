@@ -26,13 +26,35 @@ class RunCancelled(Exception):
 @dataclass(frozen=True)
 class CancellationProbe:
     database: Path
+    external_cancel_reason: Callable[[str], str | None] | None = None
 
     def __call__(self, run_id: str) -> str | None:
         if not self.database.exists():
             return None
         with contextlib.closing(sqlite3.connect(self.database, timeout=1)) as db:
-            row = db.execute("SELECT cancel_reason FROM runs WHERE id = ?", (run_id,)).fetchone()
-        return row[0] if row is not None else None
+            row = db.execute(
+                "SELECT cancel_reason, status FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        if row is None or row[0] or self.external_cancel_reason is None:
+            return row[0] if row is not None else None
+        if row[1] not in {"accepted", "planning", "workspace_pending", "executing", "validating"}:
+            return None
+        reason = self.external_cancel_reason(run_id)
+        if reason is None:
+            return None
+        if not isinstance(reason, str) or not reason.strip() or len(reason.strip()) > 500:
+            raise ValueError("External cancellation reason must be 1-500 characters")
+        with contextlib.closing(sqlite3.connect(self.database, timeout=1)) as db, db:
+            db.execute(
+                "UPDATE runs SET cancel_reason = ? WHERE id = ? AND status IN "
+                "('accepted', 'planning', 'workspace_pending', 'executing', 'validating') "
+                "AND cancel_reason IS NULL",
+                (reason.strip(), run_id),
+            )
+            updated = db.execute(
+                "SELECT cancel_reason FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        return updated[0] if updated is not None else None
 
 
 def _drain(stream, tail: bytearray, limit: int) -> None:

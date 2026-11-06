@@ -10,7 +10,7 @@ import pytest
 
 from engineer.cancellation import CancellationProbe, RunCancelled, run_cancellable_command
 from engineer.container import ContainerCheckRunner, ContainerRuntime, ContainerWorker
-from engineer.core import cancel_run, execute_task, status_run
+from engineer.core import cancel_run, execute_task, run_task, status_run
 from engineer.providers import Plan, ProviderInfo, WorkerResult
 from engineer.state import MAX_RETRIES, RunStore
 
@@ -67,6 +67,245 @@ def test_cancel_idle_run_and_show_status(tmp_path):
     assert result["result"]["reason"] == "Operator stopped it"
     assert result["events"] == ["accepted", "cancelled"]
     assert status_run(state_dir, "idle") == result
+
+
+def test_external_cancellation_before_creation_skips_planner_and_worker(tmp_path):
+    repo = make_repo(tmp_path)
+    state_dir = tmp_path / "state"
+
+    class NotCalled:
+        info = ProviderInfo("not-called", {})
+
+        def plan(self, _task):
+            pytest.fail("Planner ran after cancellation")
+
+        def execute(self, _prompt, _worktree, _run_id):
+            pytest.fail("Worker ran after cancellation")
+
+    result = execute_task(
+        task="Change the file",
+        repo=repo,
+        planner=NotCalled(),
+        worker=NotCalled(),
+        checks=[],
+        state_dir=state_dir,
+        run_id="pre-cancelled",
+        external_cancel_reason=lambda run_id: "Issue closed" if run_id == "pre-cancelled" else None,
+    )
+    assert result["status"] == "cancelled"
+    assert result["reason"] == "Issue closed"
+    saved = status_run(state_dir, "pre-cancelled")
+    assert saved["cancel_reason"] == "Issue closed"
+    assert saved["events"] == ["accepted", "cancelled"]
+
+
+def test_external_cancellation_after_planning_stops_before_worker(tmp_path):
+    repo = make_repo(tmp_path)
+    state_dir = tmp_path / "state"
+    cancelled = False
+
+    class CancellingPlanner:
+        info = ProviderInfo("fixed-planner", {})
+
+        def plan(self, _task):
+            nonlocal cancelled
+            cancelled = True
+            return Plan("Change the file", ["Edit"], ["Check"], [])
+
+    class NotCalled:
+        info = ProviderInfo("not-called", {})
+
+        def execute(self, _prompt, _worktree, _run_id):
+            pytest.fail("Worker ran after planning cancellation")
+
+    result = execute_task(
+        task="Change the file",
+        repo=repo,
+        planner=CancellingPlanner(),
+        worker=NotCalled(),
+        checks=[],
+        state_dir=state_dir,
+        run_id="planning-cancelled",
+        external_cancel_reason=lambda _run_id: "Label removed" if cancelled else None,
+    )
+    assert result["status"] == "cancelled"
+    assert result["reason"] == "Label removed"
+    assert status_run(state_dir, "planning-cancelled")["cancel_reason"] == "Label removed"
+
+
+def test_invalid_external_cancellation_reason_fails_run(tmp_path):
+    repo = make_repo(tmp_path)
+    state_dir = tmp_path / "state"
+
+    class NotCalled:
+        info = ProviderInfo("not-called", {})
+
+        def plan(self, _task):
+            pytest.fail("Planner ran with invalid cancellation signal")
+
+        def execute(self, _prompt, _worktree, _run_id):
+            pytest.fail("Worker ran with invalid cancellation signal")
+
+    with pytest.raises(ValueError, match="External cancellation reason"):
+        execute_task(
+            task="Change the file",
+            repo=repo,
+            planner=NotCalled(),
+            worker=NotCalled(),
+            checks=[],
+            state_dir=state_dir,
+            run_id="invalid-cancel-reason",
+            external_cancel_reason=lambda _run_id: " ",
+        )
+    assert status_run(state_dir, "invalid-cancel-reason")["status"] == "failed"
+
+
+def test_external_cancellation_wins_race_with_worker_failure(tmp_path):
+    repo = make_repo(tmp_path)
+    state_dir = tmp_path / "state"
+    cancelled = False
+
+    class Worker:
+        info = ProviderInfo("fixed-worker", {})
+
+        def execute(self, _prompt, _worktree, _run_id):
+            nonlocal cancelled
+            cancelled = True
+            raise RuntimeError("worker failed")
+
+    result = execute_task(
+        task="Change the file",
+        repo=repo,
+        planner=Planner(),
+        worker=Worker(),
+        checks=[],
+        state_dir=state_dir,
+        run_id="external-failure-race",
+        external_cancel_reason=lambda _run_id: "Issue closed" if cancelled else None,
+    )
+    assert result["status"] == "cancelled"
+    assert result["reason"] == "Issue closed"
+    assert status_run(state_dir, "external-failure-race")["cancel_reason"] == "Issue closed"
+
+
+def test_external_cancellation_interrupts_host_worker_and_preserves_output(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    state_dir = tmp_path / "state"
+    cancelled = threading.Event()
+    monkeypatch.setattr("engineer.core.OpenAICompatiblePlanner", lambda *_args: Planner())
+    script = (
+        "import time; from pathlib import Path; "
+        "Path('started').write_text('yes'); print('partial worker', flush=True); time.sleep(30)"
+    )
+
+    def run():
+        return run_task(
+            task="Change the file",
+            repo=repo,
+            model="fixture",
+            base_url="http://localhost/v1",
+            worker=["python", "-c", script],
+            checks=[],
+            state_dir=state_dir,
+            run_id="external-host-worker",
+            external_cancel_reason=lambda _run_id: "Issue closed" if cancelled.is_set() else None,
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(run)
+        started = state_dir / "worktrees/external-host-worker/started"
+        deadline = time.monotonic() + 8
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert started.exists()
+        cancelled.set()
+        result = future.result(timeout=12)
+    assert result["status"] == "cancelled"
+    assert result["reason"] == "Issue closed"
+    assert "partial worker" in result["worker"]["stdout"]
+    assert status_run(state_dir, "external-host-worker")["cancel_reason"] == "Issue closed"
+
+
+def test_external_cancellation_preserves_first_operator_reason(tmp_path):
+    state_dir = tmp_path / "state"
+    store = RunStore(state_dir / "runs.sqlite3")
+    store.create(
+        run_id="first-reason",
+        repo=tmp_path,
+        base_sha="a" * 40,
+        branch="agent/first-reason",
+        worktree=state_dir / "worktrees/first-reason",
+        task="Task",
+        snapshot={},
+        providers={},
+    )
+    store.request_cancel("first-reason", "Operator stopped it")
+    store.close()
+    probe = CancellationProbe(state_dir / "runs.sqlite3", lambda _run_id: "Issue closed")
+    assert probe("first-reason") == "Operator stopped it"
+    assert status_run(state_dir, "first-reason")["cancel_reason"] == "Operator stopped it"
+
+
+@pytest.mark.parametrize("stage", ["worker", "check"])
+@pytest.mark.skipif(not os.getenv("ENGINEER_TEST_IMAGE"), reason="No local test image configured")
+def test_external_cancellation_stops_container_with_partial_evidence(tmp_path, monkeypatch, stage):
+    repo = make_repo(tmp_path)
+    state_dir = tmp_path / "state"
+    cancelled = threading.Event()
+    monkeypatch.setattr("engineer.core.OpenAICompatiblePlanner", lambda *_args: Planner())
+    long_script = (
+        "import time; from pathlib import Path; "
+        "Path('started').write_text('yes'); print('partial output', flush=True); time.sleep(30)"
+    )
+    edit_script = "from pathlib import Path; Path('README.md').write_text('changed\\n')"
+    worker = ["python", "-c", long_script if stage == "worker" else edit_script]
+    checks = [] if stage == "worker" else [shlex.join(["python", "-c", long_script])]
+    run_id = f"external-container-{stage}"
+
+    def run():
+        return run_task(
+            task="Change the file",
+            repo=repo,
+            model="fixture",
+            base_url="http://localhost/v1",
+            worker=worker,
+            checks=checks,
+            state_dir=state_dir,
+            run_id=run_id,
+            execution_image=os.environ["ENGINEER_TEST_IMAGE"],
+            external_cancel_reason=lambda _run_id: "Label removed" if cancelled.is_set() else None,
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(run)
+        started = state_dir / f"worktrees/{run_id}/started"
+        deadline = time.monotonic() + 12
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert started.exists()
+        cancelled.set()
+        result = future.result(timeout=12)
+    assert result["status"] == "cancelled"
+    assert result["reason"] == "Label removed"
+    assert status_run(state_dir, run_id)["cancel_reason"] == "Label removed"
+    if stage == "worker":
+        assert "partial output" in result["worker"]["stdout"]
+    else:
+        assert result["worker"]["exit_code"] == 0
+        assert "partial output" in result["cancelled_check"]["stdout"]
+    remaining = subprocess.check_output(
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--filter",
+            f"label=engineering-orchestrator.run={run_id}",
+            "--format",
+            "{{.ID}}",
+        ],
+        text=True,
+    )
+    assert not remaining.strip()
 
 
 def test_cancellation_preserves_worker_output_and_changes(tmp_path):
