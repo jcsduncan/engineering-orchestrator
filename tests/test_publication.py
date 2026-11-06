@@ -3,6 +3,7 @@ import sqlite3
 import subprocess
 import sys
 from io import BytesIO
+from urllib.error import HTTPError
 
 import pytest
 
@@ -61,6 +62,10 @@ class FakeRemote:
     def find_pull(self, _issue, _branch, _base):
         return self.pull
 
+    def get_pull(self, _issue, number):
+        assert number == 12
+        return self.pull
+
     def create_pull(self, issue, branch, base, title, body):
         if self.fail_create_once:
             self.fail_create_once = False
@@ -76,6 +81,8 @@ class FakeRemote:
             "number": 12,
             "html_url": "https://github.com/owner/repo/pull/12",
             "head": {"sha": self.remote_sha, "ref": branch},
+            "base": {"ref": base},
+            "state": "open",
             "body": body,
         }
         return self.pull
@@ -184,6 +191,47 @@ def test_rejects_issue_swap_on_retry(tmp_path):
         publish_run(state_dir=state_dir, issue=swapped, title="feat: update README", remote=remote)
 
 
+def test_existing_pr_must_match_run_and_issue(tmp_path):
+    _, issue, state_dir = make_run(tmp_path)
+    remote = FakeRemote()
+    publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    remote.pull["body"] = "Unrelated PR"
+    with pytest.raises(ValueError, match="does not belong to this run and issue"):
+        publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    assert remote.creates == 1
+
+
+def test_rejects_pr_response_for_another_repository(tmp_path):
+    _, issue, state_dir = make_run(tmp_path)
+
+    class WrongRemote(FakeRemote):
+        def create_pull(self, *args):
+            pull = super().create_pull(*args)
+            pull["html_url"] = "https://github.com/other/repo/pull/12"
+            return pull
+
+    with pytest.raises(ValueError, match="response does not match this run"):
+        publish_run(
+            state_dir=state_dir, issue=issue, title="feat: update README", remote=WrongRemote()
+        )
+
+
+def test_replay_of_merged_pr_does_not_recreate_deleted_branch(tmp_path):
+    _, issue, state_dir = make_run(tmp_path)
+    remote = FakeRemote()
+    first = publish_run(
+        state_dir=state_dir, issue=issue, title="feat: update README", remote=remote
+    )
+    remote.pull["state"] = "closed"
+    remote.pull["merged_at"] = "2026-11-06T12:00:00Z"
+    remote.remote_sha = None
+    replay = publish_run(
+        state_dir=state_dir, issue=issue, title="feat: update README", remote=remote
+    )
+    assert replay == first
+    assert remote.pushes == 1
+
+
 def test_rejects_investigation_run(tmp_path):
     repo = make_repo(tmp_path)
     state_dir = tmp_path / "state"
@@ -248,6 +296,29 @@ def test_github_remote_verifies_claimed_repository_and_base(monkeypatch):
     assert paths[-1].endswith("/repos/owner/repo/git/commits/" + "a" * 40)
 
 
+def test_github_remote_rejects_closed_or_retargeted_pull(monkeypatch):
+    remote = GitHubPublicationRemote("secret")
+    issue = PublicationIssue("publication-1", 7, 42, "owner", "repo", 8, "Update README")
+    pull = {"state": "closed", "merged_at": None, "base": {"ref": "main"}}
+    monkeypatch.setattr(remote, "_request", lambda *_args: [pull])
+    with pytest.raises(ValueError, match="closed without merging"):
+        remote.find_pull(issue, "agent/publication-1", "main")
+    pull["state"] = "open"
+    pull["base"]["ref"] = "other"
+    with pytest.raises(ValueError, match="another base branch"):
+        remote.find_pull(issue, "agent/publication-1", "main")
+
+
+def test_github_remote_missing_branch_is_available(monkeypatch):
+    def missing(_request, timeout):
+        assert timeout == 20
+        raise HTTPError("https://api.github.com/ref", 404, "Not Found", {}, None)
+
+    monkeypatch.setattr("engineer.publication.urlopen", missing)
+    issue = PublicationIssue("publication-1", 7, 42, "owner", "repo", 8, "Update README")
+    assert GitHubPublicationRemote("secret").branch_sha(issue, "agent/publication-1") is None
+
+
 def test_git_push_keeps_token_out_of_command(monkeypatch, tmp_path):
     captured = {}
 
@@ -267,3 +338,16 @@ def test_git_push_keeps_token_out_of_command(monkeypatch, tmp_path):
     )
     assert captured["argv"][-1] == "HEAD:refs/heads/agent/publication-1"
     assert captured["env"]["HOME"] != str(tmp_path)
+
+
+def test_git_push_failure_does_not_include_token(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "engineer.publication.subprocess.run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 1, "", "secret"),
+    )
+    issue = PublicationIssue("publication-1", 7, 42, "owner", "repo", 8, "Update README")
+    with pytest.raises(RuntimeError, match="GitHub branch push failed") as error:
+        GitHubPublicationRemote("secret").push(
+            issue, tmp_path, tmp_path / ".git", "agent/publication-1"
+        )
+    assert "secret" not in str(error.value)

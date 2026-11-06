@@ -66,6 +66,8 @@ class PublicationRemote(Protocol):
 
     def find_pull(self, issue: PublicationIssue, branch: str, base: str) -> dict | None: ...
 
+    def get_pull(self, issue: PublicationIssue, number: int) -> dict: ...
+
     def create_pull(
         self, issue: PublicationIssue, branch: str, base: str, title: str, body: str
     ) -> dict: ...
@@ -94,6 +96,7 @@ class GitHubPublicationRemote:
                 "Authorization": f"Bearer {self._token}",
                 "X-GitHub-Api-Version": "2026-03-10",
                 "Content-Type": "application/json",
+                "User-Agent": "engineering-orchestrator",
             },
         )
         with urlopen(request, timeout=self._timeout) as response:
@@ -151,6 +154,9 @@ class GitHubPublicationRemote:
             f"{self._repo_path(issue)}/pulls",
             {"head": branch, "base": base, "title": title, "body": body},
         )
+
+    def get_pull(self, issue: PublicationIssue, number: int) -> dict:
+        return self._request("GET", f"{self._repo_path(issue)}/pulls/{number}")
 
     def push(self, issue: PublicationIssue, worktree: Path, git_dir: Path, branch: str) -> None:
         with tempfile.TemporaryDirectory(prefix="engineer-publish-") as directory:
@@ -387,23 +393,43 @@ def publish_run(
                         head,
                     ),
                 )
-            remote_sha = remote.branch_sha(issue, branch)
-            if remote_sha is None:
-                remote.push(issue, worktree, git_dir, branch)
-            elif remote_sha != head:
-                raise ValueError("Remote run branch points to a different commit")
-            pull = remote.find_pull(issue, branch, base)
-            if pull is None:
-                pull = remote.create_pull(issue, branch, base, title, _body(issue, record))
-            elif pull["head"]["sha"] != head:
-                raise ValueError("Existing pull request points to a different commit")
-            else:
+            pull = (
+                remote.get_pull(issue, existing["pull_number"])
+                if existing and existing["pull_number"]
+                else remote.find_pull(issue, branch, base)
+            )
+            if pull is not None:
+                if pull["head"]["sha"] != head:
+                    raise ValueError("Existing pull request points to a different commit")
                 pull_body = pull.get("body", "")
                 if (
                     f"Run ID: `{issue.run_id}`" not in pull_body
                     or f"Closes #{issue.issue_number}" not in pull_body
+                    or pull["base"]["ref"] != base
                 ):
                     raise ValueError("Existing pull request does not belong to this run and issue")
+                if pull["state"] == "closed" and not pull.get("merged_at"):
+                    raise ValueError("Existing pull request was closed without merging")
+            if pull is None or pull["state"] == "open":
+                remote_sha = remote.branch_sha(issue, branch)
+                if remote_sha is None:
+                    remote.push(issue, worktree, git_dir, branch)
+                elif remote_sha != head:
+                    raise ValueError("Remote run branch points to a different commit")
+                if pull is None:
+                    pull = remote.create_pull(issue, branch, base, title, _body(issue, record))
+            expected_url = f"https://github.com/{issue.owner}/{issue.repository}/pull/"
+            pull_body = pull.get("body", "")
+            if (
+                pull["head"]["sha"] != head
+                or pull["base"]["ref"] != base
+                or f"Run ID: `{issue.run_id}`" not in pull_body
+                or f"Closes #{issue.issue_number}" not in pull_body
+                or type(pull["number"]) is not int
+                or pull["number"] <= 0
+                or not pull["html_url"].casefold().startswith(expected_url.casefold())
+            ):
+                raise ValueError("GitHub pull request response does not match this run")
             publication = Publication(issue.run_id, branch, head, pull["number"], pull["html_url"])
             with store.db:
                 store.db.execute(
