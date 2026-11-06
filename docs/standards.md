@@ -5,6 +5,6 @@
 - Keep CLI parsing in `cli.py`. The controller in `core.py` owns state transitions, worktrees, validation, and recorded outcomes; model output is advisory.
 - Use pytest for tests. Test observable behavior and failure paths with local fixtures; do not require live models, GitHub credentials, or internet access. CI and the full pre-PR test command enforce at least 80% total branch coverage.
 - Keep runtime documentation accurate and concise. Use an ADR for a decision that changes system boundaries or constraints, not for routine implementation work.
-- Every PR uses a Conventional Commit title and states the behavior changed, checks run, and known limitations. CI must pass and a human reviews before merge.
+- Every PR uses a Conventional Commit title and states the behavior changed, checks run, and known limitations. CI must pass. A human reviews before merge, except for Dependabot patch updates to Python development dependencies covered by the auto-merge policy.
 
 Run the local checks in `CONTRIBUTING.md` at the repository root. `AGENTS.md` applies these standards to coding agents.
