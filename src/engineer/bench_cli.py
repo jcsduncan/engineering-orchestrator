@@ -16,10 +16,12 @@ def run(
     manifest: str,
     output_dir: str,
     worker: str,
+    image: str,
     model: str | None = None,
     base_url: str | None = None,
     interventions: str | None = None,
     costs_usd: str | None = None,
+    container_network: str = "none",
 ) -> None:
     """Run a suite with a local planner and coding worker.
 
@@ -35,6 +37,8 @@ def run(
         model=model,
         base_url=base_url or os.getenv("ENGINEER_BASE_URL", "http://127.0.0.1:11434/v1"),
         worker=shlex.split(worker),
+        image=image,
+        container_network=container_network,
         interventions=json.loads(interventions) if interventions else None,
         costs_usd=json.loads(costs_usd) if costs_usd else None,
     )
