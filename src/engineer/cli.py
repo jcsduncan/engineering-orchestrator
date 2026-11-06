@@ -20,6 +20,7 @@ def run(
     check: str | list[str] | None = None,
     state_dir: str | None = None,
     worker_timeout: int = 1800,
+    run_id: str | None = None,
 ) -> None:
     """Plan a task locally, or execute it with a coding worker and validation commands.
 
@@ -29,6 +30,8 @@ def run(
     if not model:
         raise SystemExit("Set --model or ENGINEER_MODEL")
     base_url = base_url or os.getenv("ENGINEER_BASE_URL", "http://127.0.0.1:11434/v1")
+    if run_id is not None and not worker:
+        raise SystemExit("--run-id requires --worker")
     if worker:
         if check is None:
             checks = []
@@ -49,6 +52,7 @@ def run(
             if state_dir
             else Path.home() / ".local/share/engineering-orchestrator",
             worker_timeout=worker_timeout,
+            run_id=run_id,
         )
         print(json.dumps(result, indent=2))
     else:

@@ -6,6 +6,7 @@ import shlex
 import stat
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -71,7 +72,13 @@ def diff_sha256(worktree: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_worktree(worktree: Path, checks: list[str], timeout: int) -> ValidationEvidence:
+def validate_worktree(
+    worktree: Path,
+    checks: list[str],
+    timeout: int,
+    *,
+    on_check: Callable[[CheckResult], None] | None = None,
+) -> ValidationEvidence:
     """Run checks in order and bind their results to the final worktree diff."""
     results = []
     try:
@@ -108,18 +115,19 @@ def validate_worktree(worktree: Path, checks: list[str], timeout: int) -> Valida
             stdout = ""
             stderr = str(exc)[-20000:]
             status = "error"
-        results.append(
-            {
-                "command": check,
-                "argv": argv,
-                "started_at": started_at,
-                "duration_seconds": time.monotonic() - started,
-                "exit_code": exit_code,
-                "status": status,
-                "stdout": stdout,
-                "stderr": stderr,
-            }
-        )
+        item: CheckResult = {
+            "command": check,
+            "argv": argv,
+            "started_at": started_at,
+            "duration_seconds": time.monotonic() - started,
+            "exit_code": exit_code,
+            "status": status,
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+        results.append(item)
+        if on_check is not None:
+            on_check(item)
         if status != "passed":
             break
     try:

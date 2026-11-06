@@ -34,6 +34,8 @@ def test_fire_accepts_checks_and_paths(monkeypatch, capsys, tmp_path):
             str(tmp_path / "state"),
             "--worker-timeout",
             "60",
+            "--run-id",
+            "task-123",
         ],
     )
 
@@ -41,6 +43,7 @@ def test_fire_accepts_checks_and_paths(monkeypatch, capsys, tmp_path):
     assert captured["worker"] == ["qwen", "-p"]
     assert captured["checks"] == ["ruff check .", "pytest -q"]
     assert captured["worker_timeout"] == 60
+    assert captured["run_id"] == "task-123"
     assert json.loads(capsys.readouterr().out) == {"status": "ready_for_review"}
 
 
@@ -73,6 +76,11 @@ def test_cli_requires_model(monkeypatch):
     monkeypatch.delenv("ENGINEER_MODEL", raising=False)
     with pytest.raises(SystemExit, match="^Set --model or ENGINEER_MODEL$"):
         cli.run("Inspect code")
+
+
+def test_run_id_requires_worker():
+    with pytest.raises(SystemExit, match="^--run-id requires --worker$"):
+        cli.run("Inspect code", model="local-test", run_id="task-123")
 
 
 @pytest.mark.parametrize("alias", ["--check", "--c", "-c", "-check"])
