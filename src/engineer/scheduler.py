@@ -146,8 +146,9 @@ class RunQueue:
             return self.get(row["run_id"])
 
     def request_cancel(self, run_id: str, reason: str) -> QueuedRun:
-        if not reason.strip():
-            raise ValueError("Cancellation reason is required")
+        reason = reason.strip()
+        if not reason or len(reason) > 500:
+            raise ValueError("Cancellation reason must be 1-500 characters")
         with sqlite3.connect(self.path, timeout=30) as connection:
             connection.row_factory = sqlite3.Row
             connection.execute("BEGIN IMMEDIATE")
@@ -175,11 +176,15 @@ class RunQueue:
 
     def is_cancel_requested(self, run_id: str) -> bool:
         """Read a cancellation signal from any execution thread."""
+        return self.cancellation_reason(run_id) is not None
+
+    def cancellation_reason(self, run_id: str) -> str | None:
+        """Read the durable cancellation reason from any execution thread."""
         with sqlite3.connect(self.path, timeout=30) as connection:
             row = connection.execute(
-                "SELECT cancel_requested FROM scheduled_runs WHERE run_id = ?", (run_id,)
+                "SELECT cancel_reason FROM scheduled_runs WHERE run_id = ?", (run_id,)
             ).fetchone()
-        return bool(row and row[0])
+        return row[0] if row is not None else None
 
     def finish(self, run_id: str, status: str, result: dict) -> QueuedRun:
         if status not in FINAL_STATUSES:

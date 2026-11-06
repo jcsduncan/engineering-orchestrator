@@ -107,6 +107,7 @@ def test_cancellation_is_durable_and_preserves_partial_result(tmp_path: Path) ->
     queue.enqueue(claim("running", 1, 2))
     assert queue.request_cancel("queued", "Issue closed").status == "cancelled"
     assert queue.result("queued") == {"cancel_reason": "Issue closed"}
+    assert queue.cancellation_reason("queued") == "Issue closed"
     started = threading.Event()
 
     def cancel_after_start():
