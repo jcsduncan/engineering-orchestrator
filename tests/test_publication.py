@@ -3,6 +3,7 @@ import sqlite3
 import subprocess
 import sys
 from io import BytesIO
+from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
@@ -220,6 +221,52 @@ def test_retry_after_push_timeout_reuses_local_commit(tmp_path):
     assert publication.pull_number == 12
     assert remote.pushes == 2
     assert remote.creates == 1
+
+
+def test_recovery_accepts_valid_commit_before_sha_recorded(tmp_path):
+    _, issue, state_dir = make_run(tmp_path)
+    remote = FakeRemote()
+    remote.fail_push_once = True
+    with pytest.raises(TimeoutError, match="push timed out"):
+        publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    with sqlite3.connect(state_dir / "runs.sqlite3") as db:
+        db.execute("UPDATE run_publications SET commit_sha = NULL")
+    assert (
+        publish_run(
+            state_dir=state_dir, issue=issue, title="feat: update README", remote=remote
+        ).pull_number
+        == 12
+    )
+
+
+def test_recovery_rejects_different_tree_with_matching_parent_and_footer(tmp_path):
+    result, issue, state_dir = make_run(tmp_path)
+    remote = FakeRemote()
+    remote.fail_push_once = True
+    with pytest.raises(TimeoutError, match="push timed out"):
+        publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    with sqlite3.connect(state_dir / "runs.sqlite3") as db:
+        db.execute("UPDATE run_publications SET commit_sha = NULL")
+    (Path(result["worktree"]) / "README.md").write_text("unvalidated\n")
+    subprocess.run(["git", "-C", result["worktree"], "add", "README.md"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            result["worktree"],
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "--amend",
+            "--no-verify",
+            "-m",
+            "feat: update README\n\nRun-ID: publication-1",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    with pytest.raises(ValueError, match="does not match the validated tree"):
+        publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
 
 
 @pytest.mark.parametrize("stage", [False, True])

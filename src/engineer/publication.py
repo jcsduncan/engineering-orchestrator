@@ -294,7 +294,8 @@ def _publication_db(store: RunStore) -> None:
                 installation_id INTEGER NOT NULL,
                 repository_id INTEGER NOT NULL,
                 issue_number INTEGER NOT NULL,
-                commit_sha TEXT NOT NULL,
+                tree_sha TEXT NOT NULL,
+                commit_sha TEXT,
                 pull_number INTEGER,
                 pull_url TEXT
             )"""
@@ -367,7 +368,20 @@ def publish_run(
             base = remote.verify_repository(issue, record["base_sha"])
             branch = record["branch"]
             head = git(worktree, "rev-parse", "HEAD", git_dir=git_dir)
+            existing = store.db.execute(
+                """SELECT installation_id, repository_id, issue_number, tree_sha, commit_sha,
+                pull_number, pull_url FROM run_publications WHERE run_id = ?""",
+                (issue.run_id,),
+            ).fetchone()
+            if existing and (
+                existing["installation_id"] != issue.installation_id
+                or existing["repository_id"] != issue.repository_id
+                or existing["issue_number"] != issue.issue_number
+            ):
+                raise ValueError("Recorded publication does not match run or issue")
             if head == record["base_sha"]:
+                if existing and existing["commit_sha"]:
+                    raise ValueError("Recorded publication commit is missing from run branch")
                 if diff_sha256(worktree, git_dir=git_dir) != validation["diff_sha256_after"]:
                     raise ValueError("Worktree no longer matches validated diff")
                 manifest = _changed_manifest(worktree, git_dir)
@@ -377,6 +391,22 @@ def publish_run(
                     _git_command(worktree, git_dir, "add", "-A")
                     if _changed_manifest(worktree, git_dir) != manifest:
                         raise ValueError("Worktree changed while staging publication")
+                    tree_sha = _git_command(worktree, git_dir, "write-tree")
+                    if existing and existing["tree_sha"] != tree_sha:
+                        raise ValueError("Staged tree does not match recorded publication")
+                    with store.db:
+                        store.db.execute(
+                            """INSERT OR IGNORE INTO run_publications
+                            (run_id, installation_id, repository_id, issue_number, tree_sha)
+                            VALUES (?, ?, ?, ?, ?)""",
+                            (
+                                issue.run_id,
+                                issue.installation_id,
+                                issue.repository_id,
+                                issue.issue_number,
+                                tree_sha,
+                            ),
+                        )
                     _git_command(
                         worktree,
                         git_dir,
@@ -396,6 +426,8 @@ def publish_run(
                     raise
                 head = git(worktree, "rev-parse", "HEAD", git_dir=git_dir)
             else:
+                if existing is None:
+                    raise ValueError("Publication commit has no validated tree record")
                 parent = git(worktree, "rev-parse", "HEAD^", git_dir=git_dir)
                 message = git(worktree, "log", "-1", "--format=%B", git_dir=git_dir)
                 footer = f"Run-ID: {issue.run_id}"
@@ -405,32 +437,19 @@ def publish_run(
                     or message.splitlines()[-1] != footer
                 ):
                     raise ValueError("Run branch contains an unrecognized commit")
+            committed_tree = git(worktree, "rev-parse", "HEAD^{tree}", git_dir=git_dir)
+            recorded_tree = existing["tree_sha"] if existing else tree_sha
+            if committed_tree != recorded_tree:
+                raise ValueError("Publication commit does not match the validated tree")
+            if existing and existing["commit_sha"] not in {None, head}:
+                raise ValueError("Recorded publication does not match run or issue")
             if git(worktree, "status", "--porcelain", "--untracked-files=all", git_dir=git_dir):
                 raise ValueError("Run worktree is dirty after publication commit")
-            existing = store.db.execute(
-                """SELECT installation_id, repository_id, issue_number, commit_sha,
-                pull_number, pull_url FROM run_publications WHERE run_id = ?""",
-                (issue.run_id,),
-            ).fetchone()
-            if existing and (
-                existing["commit_sha"] != head
-                or existing["installation_id"] != issue.installation_id
-                or existing["repository_id"] != issue.repository_id
-                or existing["issue_number"] != issue.issue_number
-            ):
-                raise ValueError("Recorded publication does not match run or issue")
             with store.db:
                 store.db.execute(
-                    """INSERT OR IGNORE INTO run_publications
-                    (run_id, installation_id, repository_id, issue_number, commit_sha)
-                    VALUES (?, ?, ?, ?, ?)""",
-                    (
-                        issue.run_id,
-                        issue.installation_id,
-                        issue.repository_id,
-                        issue.issue_number,
-                        head,
-                    ),
+                    """UPDATE run_publications SET commit_sha = ?
+                    WHERE run_id = ? AND commit_sha IS NULL""",
+                    (head, issue.run_id),
                 )
             pull = (
                 remote.get_pull(issue, existing["pull_number"])
