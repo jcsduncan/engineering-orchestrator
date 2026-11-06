@@ -410,7 +410,10 @@ def execute_task(
             "reason": validation.reason,
         }
         verify_git_pointer()
-        diff = git(worktree, "status", "--short", git_dir=git_dir)
+        status_args = ["status", "--short"]
+        if mode == "investigation":
+            status_args.append("--untracked-files=all")
+        diff = git(worktree, *status_args, git_dir=git_dir)
         result = {**progress, "changed_files": diff.splitlines()}
         if mode == "investigation":
             report = None

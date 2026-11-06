@@ -525,6 +525,33 @@ def test_investigation_keeps_first_failure_reason(tmp_path):
     assert result["changed_files"] == ["M README.md"]
 
 
+def test_investigation_rejects_untracked_file_when_git_hides_it(tmp_path):
+    repo = make_repo(tmp_path)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "status.showUntrackedFiles", "no"], check=True
+    )
+
+    class Worker:
+        info = ProviderInfo("test", {})
+
+        def execute(self, _prompt, worktree, _run_id):
+            (worktree / "new.txt").write_text("untracked\n")
+            return WorkerResult(0, REPORT_PREFIX + json.dumps(report()), "")
+
+    result = execute_task(
+        task="Investigate",
+        repo=repo,
+        planner=InvestigationPlanner(),
+        worker=Worker(),
+        checks=[],
+        state_dir=tmp_path / "state",
+        mode="investigation",
+    )
+    assert result["status"] == "failed"
+    assert result["failure_reason"] == "Investigation changed the worktree"
+    assert result["changed_files"] == ["?? new.txt"]
+
+
 def test_investigation_failed_check_keeps_report_and_check_evidence(tmp_path):
     result = execute_task(
         task="Investigate",
