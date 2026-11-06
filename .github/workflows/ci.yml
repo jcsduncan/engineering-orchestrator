@@ -19,6 +19,10 @@ jobs:
         with:
           python-version: "3.11"
       - run: uv sync --locked --dev
+      - if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: uv run --locked python scripts/check_pr_title.py "$PR_TITLE"
       - run: uv run --locked ruff check .
       - run: uv run --locked ruff format --check .
       - run: uv run --locked mkdocs build --strict
@@ -42,7 +46,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked --dev
-      - run: uv run --locked pytest -q --cov=engineer --cov-report=xml --cov-report=term-missing
+      - run: uv run --locked pytest -q --cov-report=xml
       - uses: codecov/codecov-action@f9fe539f5290016afa014f8ef31597d3a61c2dea # v7
         if: matrix.python == '3.11'
         with:

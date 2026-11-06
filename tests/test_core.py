@@ -4,6 +4,7 @@ import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,25 @@ def planner_url():
 def test_local_plan(planner_url):
     plan = plan_task("Do something", "local-test", planner_url)
     assert plan.steps == ["Inspect"]
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ('{"objective": "", "steps": [], "checks": [], "risks": []}', "no objective"),
+        ('{"objective": "x", "steps": "not a list", "checks": [], "risks": []}', "steps"),
+        ('{"objective": "x", "steps": [], "checks": [1], "risks": []}', "checks"),
+        ('{"objective": "x", "steps": [], "checks": [], "risks": null}', "risks"),
+    ],
+)
+def test_plan_rejects_invalid_response(monkeypatch, content, message):
+    response = {"choices": [{"message": {"content": content}}]}
+    monkeypatch.setattr(
+        "engineer.core.urllib.request.urlopen",
+        lambda _request, timeout: BytesIO(json.dumps(response).encode()),
+    )
+    with pytest.raises(ValueError, match=message):
+        plan_task("Do something", "local-test", "http://localhost:11434/v1")
 
 
 def test_run_records_worktree_and_checks(planner_url, tmp_path):
