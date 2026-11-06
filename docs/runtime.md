@@ -40,3 +40,19 @@ The CLI resolves the local image to its immutable ID, then runs the worker and c
 `PlanningProvider` and `WorkerProvider` define the programmatic interfaces. `OpenAICompatiblePlanner` keeps planning on the configured model endpoint; `CommandWorker` runs the selected CLI. `execute_task` accepts other implementations independently of the CLI defaults.
 
 Each run records provider names and a sanitized configuration summary in `providers_json` and its result. The planner record includes model, endpoint origin, and timeout. The worker record includes executable name, command hash, and timeout. Existing SQLite run databases gain the new column on use.
+
+## GitHub issue reconciliation
+
+`engineer-issues` runs one reconciliation pass for a configured GitHub App installation and repository:
+
+```bash
+ENGINEER_GITHUB_TOKEN=... uv run --locked engineer-issues jcsduncan engineering-orchestrator 12345
+```
+
+The token needs read access to repository issues and dependencies. The command prints unacknowledged claims and cancellations as JSON. Schedule repeated passes outside the command. It fetches the repository ID, lists issues labelled `agent:run`, then fetches each issue and its blocking relationships again before claiming. With `--issue-number`, it fetches that issue directly. Only open issues with no open blockers are claimed. Pull requests are excluded.
+
+Claims use the same SQLite database as runs. Each claim stores an immutable title, body, objective, acceptance criteria, issue URL, and update time. The unique key is installation ID, repository ID, issue number, and generation; the returned run ID is stable for that key. Each pass returns an unacknowledged claim again. The controller must durably register the run ID, then call `IssueClaimStore.acknowledge_claim(run_id)`; repeated deliveries use the same run ID and cannot create another claim. Editing the issue does not change its snapshot.
+
+After a run finishes, its controller calls `IssueClaimStore.complete(run_id)`. The method accepts only an active claim. If cancellation won the race and completion raises `ValueError`, the controller handles the pending cancellation instead. To claim a completed or cancelled issue again, specify both `--issue-number` and an increased `--generation`. An increased generation cannot trigger reruns of other issues in the repository.
+
+Closing the issue, removing `agent:run`, or finding that the issue has left the repository revokes an unfinished claim. The JSON cancellation result includes its run ID and reason. `engineer-issues` does not stop running workers: a controller consuming that result must stop the run, then call `IssueClaimStore.acknowledge_cancel(run_id)`. Pending cancellations appear on every pass until acknowledged and prevent a new generation from starting. Issue text is data; it cannot set worker commands, checks, or permissions. Transient API failures abort the pass before changing claims.
