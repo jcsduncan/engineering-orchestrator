@@ -11,10 +11,10 @@ import pytest
 
 from engineer.core import execute_task
 from engineer.delivery import RunDeliveryStore, deliver_finalized, deliver_run
-from engineer.intake import IssueClaimStore, TaskSnapshot
+from engineer.intake import IssueClaim, IssueClaimStore, TaskSnapshot
 from engineer.providers import Plan, ProviderInfo, WorkerResult
 from engineer.publication import PublicationIssue, publish_run
-from engineer.scheduler import QueuedRun
+from engineer.scheduler import QueuedRun, RunQueue
 
 
 class Planner:
@@ -185,6 +185,23 @@ def test_publish_completed_run_once_across_delivery_restarts(tmp_path):
     assert reviewer.calls == 1
     assert remote.creates == remote.pushes == 1
     assert factory_calls == [42]
+
+
+def test_real_queue_finalized_contract(tmp_path):
+    state_dir, result, source = make_run(tmp_path)
+    queue = RunQueue(state_dir / "runs.sqlite3", max_running=1, max_per_repository=1)
+    try:
+        queue.enqueue(IssueClaim(source.item.snapshot, "claimed"))
+        assert queue.dispatch().run_id == "issue-1"
+        queue.finish(
+            "issue-1", "completed", {"status": "completed", "run_status": result["status"]}
+        )
+        remote = Remote()
+        outcomes = deliver_finalized(state_dir, queue, Reviewer(), lambda _snapshot: remote)
+        assert outcomes[0].status == "published"
+        assert remote.creates == 1
+    finally:
+        queue.close()
 
 
 def test_retry_after_review_when_publication_credential_unavailable(tmp_path):
