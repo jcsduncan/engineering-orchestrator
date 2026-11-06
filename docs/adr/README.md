@@ -8,3 +8,4 @@ ADRs record constraints on implementation. Task plans live elsewhere.
 - [004: Opt-in GitHub issue intake](004-issue-intake.md)
 - [005: Automatic release publication](005-automatic-releases.md)
 - [006: Diff-bound validation and delivery evidence](006-delivery-evidence.md)
+- [007: Worker-owned agent coordination](007-worker-owned-agent-coordination.md)

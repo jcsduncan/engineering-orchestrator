@@ -39,6 +39,8 @@ The CLI resolves the local image to its immutable ID, then runs the worker and c
 
 `PlanningProvider` and `WorkerProvider` define the programmatic interfaces. `OpenAICompatiblePlanner` keeps planning on the configured model endpoint; `CommandWorker` runs the selected CLI. `execute_task` accepts other implementations independently of the CLI defaults.
 
+A worker command is one runtime invocation per engineering run. That runtime may manage internal agents, but it must return through the same worker result contract. The controller does not configure or resume those internal agents. Internal delegation depends on the selected runtime's support for the invocation mode; for example, [Claude Code Agent Teams](https://code.claude.com/docs/en/agent-teams) require an interactive session, while this CLI invokes workers noninteractively.
+
 Each run records provider names and a sanitized configuration summary in `providers_json` and its result. The planner record includes model, endpoint origin, and timeout. The worker record includes executable name, command hash, and timeout. Existing SQLite run databases gain the new column on use.
 
 ## GitHub issue reconciliation
