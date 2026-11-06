@@ -9,7 +9,7 @@ docker image inspect engineering-orchestrator-claude:2.1.319 --format '{{.Id}}'
 
 Use the reported `sha256:` image ID, not the mutable tag, in a [worker profile](runtime.md#providers) after its probes pass. The controller resolves and pins the image ID for each run. The image contains `git`, Python 3.11, and `uv`; target repositories may need more validation tools.
 
-The [local container probe](probes/claude-code-2.1.319.json) records the built image ID, version, missing-auth behavior, timeout, cancellation, output truncation, and observed cgroup limits. Authenticated model behavior remains unverified until the dedicated key is supplied.
+The [local container probe](probes/claude-code-2.1.319.json) records the built image ID, version, missing-auth behavior, timeout, cancellation, output truncation, and observed cgroup limits. Authenticated model behavior remains unverified; [#57](https://github.com/jcsduncan/engineering-orchestrator/issues/57) tracks the live probes.
 
 Create a dedicated Anthropic API key file outside the repository, owned by the runner with mode `0600`. The container mounts that file at `/run/secrets/worker-auth` for worker execution only. `claude-worker` reads it, exports `ANTHROPIC_API_KEY`, and starts `claude -p` with `dontAsk` permissions and an explicit tool allowlist. It does not inherit the host home or GitHub credentials. The worker can read and send its own model credential over the network; use a key with a spend limit. Public CI cannot run authenticated probes without a separately provisioned key.
 
