@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 from collections.abc import Callable
@@ -18,6 +19,7 @@ from .state import RunStore
 DELIVERABLE = {"ready_for_review", "report_for_review", "inconclusive"}
 REPORTS = {"report_for_review", "inconclusive"}
 TERMINAL = {"published", "report_ready", "suppressed", "blocked"}
+logger = logging.getLogger(__name__)
 
 
 class DeliveryInvariantError(ValueError):
@@ -308,6 +310,7 @@ def deliver_finalized(
             try:
                 result = deliver_run(state_dir, queue, queued.run_id, reviewer, remote_factory)
             except Exception as exc:
+                logger.exception("Delivery pass could not record run %s", queued.run_id)
                 result = DeliveryResult(
                     queued.run_id,
                     "failed",

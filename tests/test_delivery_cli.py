@@ -5,6 +5,7 @@ import json
 import pytest
 
 from engineer import delivery_cli
+from engineer.delivery import DeliveryResult
 
 
 def test_token_file_is_read_when_publication_starts(tmp_path, monkeypatch, capsys):
@@ -51,3 +52,16 @@ def test_rejects_token_file_inside_worker_worktree(tmp_path):
         delivery_cli.run(
             7, 42, state_dir=str(tmp_path), review_model="local", token_file=str(token_file)
         )
+
+
+@pytest.mark.parametrize("status", ["failed", "blocked"])
+def test_command_exits_nonzero_when_delivery_needs_attention(tmp_path, monkeypatch, capsys, status):
+    monkeypatch.setattr(
+        delivery_cli,
+        "deliver_finalized",
+        lambda *_args, **_kwargs: [DeliveryResult("issue-1", status, "ready_for_review")],
+    )
+    with pytest.raises(SystemExit) as error:
+        delivery_cli.run(7, 42, state_dir=str(tmp_path), review_model="local")
+    assert error.value.code == 1
+    assert json.loads(capsys.readouterr().out)[0]["status"] == status

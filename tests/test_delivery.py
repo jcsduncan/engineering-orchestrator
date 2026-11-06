@@ -467,7 +467,7 @@ def test_claim_finalization_can_retry(tmp_path):
     )
 
 
-def test_one_corrupt_run_does_not_block_later_deliveries(tmp_path):
+def test_one_corrupt_run_does_not_block_later_deliveries(tmp_path, caplog):
     state_dir, _, queue = make_run(tmp_path)
     original_result = queue.result
     bad = replace(queue.item, run_id="bad-run")
@@ -487,3 +487,5 @@ def test_one_corrupt_run_does_not_block_later_deliveries(tmp_path):
     ]
     assert "OperationalError" in outcomes[0].error
     assert remote.creates == 1
+    assert "Delivery pass could not record run bad-run" in caplog.text
+    assert "sqlite3.OperationalError: corrupt queue row" in caplog.text

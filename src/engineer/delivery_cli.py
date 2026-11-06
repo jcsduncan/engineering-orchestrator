@@ -68,6 +68,8 @@ def run(
     finally:
         queue.close()
     print(json.dumps([asdict(outcome) for outcome in outcomes], indent=2))
+    if any(outcome.status in {"failed", "blocked"} for outcome in outcomes):
+        raise SystemExit(1)
 
 
 def main() -> None:
