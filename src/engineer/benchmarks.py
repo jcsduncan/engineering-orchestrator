@@ -18,7 +18,11 @@ from .core import run_task
 
 def _digest_tree(root: Path) -> str:
     digest = hashlib.sha256()
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ValueError("Benchmark fixture cannot contain symlinks")
+        if not path.is_file():
+            continue
         relative = path.relative_to(root).as_posix()
         digest.update(relative.encode() + b"\0" + path.read_bytes() + b"\0")
     return digest.hexdigest()
@@ -29,7 +33,7 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _fixture_repo(source: Path, destination: Path) -> tuple[str, str]:
-    if not source.is_dir() or any(part.startswith(".") for part in source.parts[-1:]):
+    if not source.is_dir() or source.name.startswith("."):
         raise ValueError(f"Invalid fixture directory: {source}")
     digest = _digest_tree(source)
     shutil.copytree(source, destination)
@@ -43,9 +47,20 @@ def _fixture_repo(source: Path, destination: Path) -> tuple[str, str]:
         "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
         "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+0000",
         "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+0000",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
     }
     subprocess.run(
-        ["git", "-C", str(destination), "commit", "-qm", "Benchmark fixture"],
+        [
+            "git",
+            "-C",
+            str(destination),
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-qm",
+            "Benchmark fixture",
+        ],
         check=True,
         env=environment,
     )
