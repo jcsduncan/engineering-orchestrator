@@ -33,7 +33,7 @@ Each run starts with a persisted task snapshot, then moves through `accepted`, `
 
 Use `engineer status RUN_ID` to read the current state and evidence. `engineer cancel RUN_ID --reason 'Operator requested'` records a cancellation request; the controller stops an active worker or check, preserves bounded partial output, and marks the run `cancelled`. An idle run is cancelled immediately. `engineer retry SOURCE_RUN_ID 'task'` requires the same execution options as the source run and creates a fresh worktree at its pinned base commit. Only `failed` or `cancelled` runs can be retried, with at most three new generations. Each source run can create one child generation. Use `--run-id` to choose the new generation's ID; otherwise one is generated.
 
-The CLI resolves the local image to its immutable ID, then runs the worker and checks in disposable containers using that image. Each container mounts the run worktree read/write and pinned Git metadata read-only, with repository and worktree Git configs masked to hide remote credentials. It inherits no host environment variables or home directory and has no Docker socket. Its root filesystem is read-only, with a writable temporary filesystem. Docker applies CPU, memory, and process limits; the controller terminates a timed-out container. The controller rejects a changed worktree `.git` pointer before reading Git state on the host. `bridge` networking adds `host.docker.internal` for an explicitly configured model endpoint. The CLI does not publish changes or create pull requests. Programmatic host execution remains available for trusted integrations.
+The CLI resolves the local image to its immutable ID, then runs the worker and checks in disposable containers using that image. Each container mounts the run worktree read/write and pinned Git metadata read-only, with repository and worktree Git configs masked to hide remote credentials. It inherits no host environment variables or home directory and has no Docker socket. Its root filesystem is read-only, with a writable temporary filesystem. Docker applies CPU, memory, and process limits; the controller terminates a timed-out container. The controller rejects a changed worktree `.git` pointer before reading Git state on the host. `bridge` networking adds `host.docker.internal` for an explicitly configured model endpoint. Worker execution and PR publication use separate commands. Programmatic host execution remains available for trusted integrations.
 
 ## Providers
 
@@ -56,3 +56,17 @@ Claims use the same SQLite database as runs. Each claim stores an immutable titl
 After a run finishes, its controller calls `IssueClaimStore.complete(run_id)`. The method accepts only an active claim. If cancellation won the race and completion raises `ValueError`, the controller handles the pending cancellation instead. To claim a completed or cancelled issue again, specify both `--issue-number` and an increased `--generation`. An increased generation cannot trigger reruns of other issues in the repository.
 
 Closing the issue, removing `agent:run`, or finding that the issue has left the repository revokes an unfinished claim. The JSON cancellation result includes its run ID and reason. `engineer-issues` does not stop running workers: a controller consuming that result must stop the run, then call `IssueClaimStore.acknowledge_cancel(run_id)`. Pending cancellations appear on every pass until acknowledged and prevent a new generation from starting. Issue text is data; it cannot set worker commands, checks, or permissions. Transient API failures abort the pass before changing claims.
+
+## GitHub PR publication
+
+`engineer-publish` takes a completed run ID from an active or completed GitHub issue claim:
+
+```bash
+ENGINEER_GITHUB_TOKEN=... uv run --locked engineer-publish RUN_ID
+```
+
+The token must be a GitHub App installation token limited to the claimed repository, with Contents and Pull requests write access. Run publication as a separate controller process so the token is never present in the worker environment. Use `--state-dir` for a nondefault state path and `--title 'fix: ...'` to override the conventional PR title derived from the issue title.
+
+Only `ready_for_review` implementation runs are eligible. The publisher verifies the claim, repository scope, base SHA, and current diff hash before committing the run worktree. It pushes the fixed `agent/<run-id>` branch, then finds or creates a PR. SQLite records the commit and PR identity. Retrying the same run ID reuses them, including after a network timeout; a merged PR is returned without recreating a deleted branch. A conflicting remote branch, unrelated PR, changed worktree, cancelled claim, or investigation result is rejected.
+
+The PR links the issue and includes the base SHA, validated diff hash, check outcomes, planner risks, and unverified work. `feat:` and `fix:` titles add the repository's release commit override. The publisher does not merge or approve the PR.
