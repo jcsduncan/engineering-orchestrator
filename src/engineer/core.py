@@ -14,6 +14,7 @@ from .providers import (
     OpenAICompatiblePlanner,
     Plan,
     PlanningProvider,
+    ProviderInfo,
     WorkerProvider,
     WorkerResult,
     plan_task,
@@ -105,7 +106,14 @@ def execute_task(
         )
     ):
         raise ValueError("Planning provider returned an invalid Plan")
-    providers = {"planner": asdict(planner.info), "worker": asdict(worker.info)}
+    planner_info, worker_info = planner.info, worker.info
+    if not isinstance(planner_info, ProviderInfo) or not isinstance(worker_info, ProviderInfo):
+        raise ValueError("Provider returned invalid ProviderInfo")
+    try:
+        providers = {"planner": asdict(planner_info), "worker": asdict(worker_info)}
+        providers_json = json.dumps(providers)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Provider metadata is not JSON-serializable") from exc
     run_id = uuid.uuid4().hex[:12]
     branch = f"agent/{run_id}"
     worktree = state_dir / "worktrees" / run_id
@@ -129,7 +137,7 @@ def execute_task(
                 task,
                 json.dumps(asdict(plan)),
                 None,
-                json.dumps(providers),
+                providers_json,
             ),
         )
         db.commit()

@@ -222,6 +222,39 @@ def test_invalid_planning_provider_output_is_rejected(tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    ("info", "message"),
+    [
+        ({"name": "broken"}, "Provider returned invalid ProviderInfo"),
+        (ProviderInfo("broken", {"value": object()}), "Provider metadata is not JSON-serializable"),
+    ],
+)
+def test_invalid_provider_metadata_creates_no_worktree(tmp_path, info, message):
+    class Planner:
+        def plan(self, _task):
+            return Plan("Task", [], [], [])
+
+    class Worker:
+        def execute(self, _prompt, _worktree, _run_id):
+            pytest.fail("Worker must not run")
+
+    planner = Planner()
+    planner.info = info
+    worker = Worker()
+    worker.info = ProviderInfo("test", {})
+    state_dir = tmp_path / "state"
+    with pytest.raises(ValueError, match=message):
+        execute_task(
+            task="task",
+            repo=make_repo(tmp_path),
+            planner=planner,
+            worker=worker,
+            checks=[],
+            state_dir=state_dir,
+        )
+    assert not state_dir.exists()
+
+
 def test_invalid_worker_provider_output_fails_run(tmp_path):
     class Planner:
         info = ProviderInfo("test", {})

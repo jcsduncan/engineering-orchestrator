@@ -109,7 +109,7 @@ class OpenAICompatiblePlanner:
             or not endpoint.hostname
         ):
             raise ValueError("Planner requires a model and an HTTP endpoint")
-        if self.timeout <= 0:
+        if type(self.timeout) is not int or self.timeout <= 0:
             raise ValueError("Planner timeout must be positive")
 
     @property
@@ -138,7 +138,7 @@ class CommandWorker:
     def __post_init__(self) -> None:
         if not self.command or any(not arg for arg in self.command):
             raise ValueError("A coding worker command is required")
-        if self.timeout <= 0:
+        if type(self.timeout) is not int or self.timeout <= 0:
             raise ValueError("Worker timeout must be positive")
 
     @property
