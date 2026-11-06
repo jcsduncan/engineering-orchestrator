@@ -18,6 +18,8 @@ from urllib.parse import urlsplit
 from .container import ContainerRuntime
 from .core import run_task
 
+_CASE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+
 
 def _digest_tree(root: Path) -> str:
     digest = hashlib.sha256()
@@ -101,7 +103,7 @@ def load_cases(manifest: Path) -> list[dict[str, Any]]:
         )
         if (
             not isinstance(name, str)
-            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", name)
+            or not _CASE_ID.fullmatch(name)
             or name in seen
             or not isinstance(fixture, str)
             or not fixture.isidentifier()
@@ -322,7 +324,7 @@ def record_measurements(
     if not isinstance(cases, list) or any(
         not isinstance(item, dict)
         or not isinstance(item.get("id"), str)
-        or not item["id"].isidentifier()
+        or not _CASE_ID.fullmatch(item["id"])
         or not isinstance(item.get("score"), dict)
         for item in cases
     ):

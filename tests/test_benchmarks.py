@@ -9,6 +9,7 @@ import pytest
 from engineer import bench_cli
 from engineer.benchmarks import (
     _fixture_repo,
+    _git_environment,
     load_cases,
     record_measurements,
     run_suite,
@@ -24,7 +25,9 @@ def test_fixture_repository_is_reproducible(tmp_path: Path) -> None:
     assert first == second
     assert (
         subprocess.check_output(
-            ["git", "-C", str(tmp_path / "first"), "status", "--porcelain"], text=True
+            ["git", "-C", str(tmp_path / "first"), "status", "--porcelain"],
+            text=True,
+            env=_git_environment(),
         )
         == ""
     )
@@ -175,6 +178,7 @@ def test_suite_scores_implementation_oracle(
         subprocess.run(
             ["git", "-C", str(repo), "worktree", "add", "-qb", "agent/test", str(worktree)],
             check=True,
+            env=_git_environment(),
         )
         if kwargs["mode"] == "implementation":
             (worktree / "ledger.py").write_text(
@@ -256,6 +260,14 @@ def test_record_measurements_preserves_raw_artifacts(tmp_path: Path) -> None:
     assert json.loads((output / "measured_summary.json").read_text()) == measured
     with pytest.raises(ValueError, match="Invalid costs_usd"):
         record_measurements(output, costs_usd={"unknown": 1.0})
+
+    original["cases"][0]["id"] = "case-1"
+    (output / "summary.json").write_text(json.dumps(original))
+    assert record_measurements(output, interventions={"case-1": 1})["cases"][0]["id"] == "case-1"
+    original["cases"][0]["id"] = "_probe"
+    (output / "summary.json").write_text(json.dumps(original))
+    with pytest.raises(ValueError, match="invalid cases"):
+        record_measurements(output, interventions={"_probe": 1})
 
 
 def test_benchmark_cli_accepts_fire_parsed_measurement_maps(
