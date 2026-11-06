@@ -127,6 +127,26 @@ def test_interrupted_worker_is_not_repeated(tmp_path):
     assert run(repo, state_dir, planner, worker) == result
 
 
+def test_interrupted_planner_is_not_repeated(tmp_path):
+    repo = make_repo(tmp_path)
+    state_dir = tmp_path / "state"
+
+    class InterruptedPlanner(Planner):
+        def plan(self, task):
+            super().plan(task)
+            raise KeyboardInterrupt
+
+    planner, worker = InterruptedPlanner(), Worker()
+    with pytest.raises(KeyboardInterrupt):
+        run(repo, state_dir, planner, worker)
+    result = run(repo, state_dir, planner, worker)
+    assert result["status"] == "needs_review"
+    assert result["reason"].startswith("Interrupted during planning")
+    assert "worktree_error" not in result
+    assert planner.calls == 1
+    assert worker.calls == 0
+
+
 def test_interrupted_validation_preserves_worker_evidence(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     state_dir = tmp_path / "state"
@@ -193,6 +213,32 @@ def test_completed_result_replays_without_repeating_worker(tmp_path, monkeypatch
     assert worker.calls == 1
     with sqlite3.connect(state_dir / "runs.sqlite3") as db:
         assert db.execute("SELECT COUNT(*) FROM run_events").fetchone()[0] == 6
+
+
+def test_failure_preserves_worker_and_check_evidence(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    state_dir = tmp_path / "state"
+    planner, worker = Planner(), Worker()
+    from engineer import core
+
+    original = core.validate_worktree
+
+    def fail_after_checks(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("finalization failed")
+
+    monkeypatch.setattr(core, "validate_worktree", fail_after_checks)
+    with pytest.raises(RuntimeError, match="finalization failed"):
+        run(repo, state_dir, planner, worker)
+    store = RunStore(state_dir / "runs.sqlite3")
+    try:
+        record = store.get("fixed-run")
+    finally:
+        store.close()
+    assert record["status"] == "failed"
+    assert record["result"]["worker"]["stdout"] == "edited"
+    assert record["result"]["checks"][0]["status"] == "passed"
+    assert record["result"]["error"] == "finalization failed"
 
 
 def test_run_id_cannot_be_reused_for_different_task(tmp_path):

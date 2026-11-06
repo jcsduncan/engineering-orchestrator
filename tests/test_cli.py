@@ -47,6 +47,23 @@ def test_fire_accepts_checks_and_paths(monkeypatch, capsys, tmp_path):
     assert json.loads(capsys.readouterr().out) == {"status": "ready_for_review"}
 
 
+def test_fire_accepts_numeric_run_id(monkeypatch, capsys):
+    captured = {}
+
+    def fake_run_task(**kwargs):
+        captured.update(kwargs)
+        return {"status": "needs_review"}
+
+    monkeypatch.setattr(cli, "run_task", fake_run_task)
+    fire.Fire(
+        cli.run,
+        command=["Fix test", "--model", "local-test", "--worker", "qwen -p", "--run-id", "12345"],
+    )
+
+    assert captured["run_id"] == "12345"
+    assert json.loads(capsys.readouterr().out) == {"status": "needs_review"}
+
+
 @pytest.mark.parametrize("check", [5, ["pytest -q", 5], {"command": "pytest -q"}, ("pytest -q",)])
 def test_cli_rejects_invalid_checks(check, monkeypatch):
     monkeypatch.setattr(cli, "run_task", lambda **_kwargs: pytest.fail("worker must not run"))

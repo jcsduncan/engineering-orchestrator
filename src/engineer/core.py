@@ -59,6 +59,7 @@ def _provider_metadata(planner: PlanningProvider, worker: WorkerProvider) -> dic
 
 
 def _run_id(value: str | None) -> str:
+    """Return a safe run ID for branch and state paths."""
     run_id = value if value is not None else uuid.uuid4().hex[:12]
     if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", run_id):
         raise ValueError("Run ID must be 1-64 letters, digits, hyphens, or underscores")
@@ -66,6 +67,7 @@ def _run_id(value: str | None) -> str:
 
 
 def _acquire_run_lock(state_dir: Path, run_id: str) -> BinaryIO:
+    """Claim one run without waiting for another controller."""
     lock_path = state_dir / "locks" / f"{run_id}.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+b")
@@ -78,6 +80,7 @@ def _acquire_run_lock(state_dir: Path, run_id: str) -> BinaryIO:
 
 
 def _ensure_worktree(repo: Path, worktree: Path, branch: str, base_sha: str) -> None:
+    """Reuse or create the recorded clean worktree at its pinned commit."""
     if worktree.is_symlink():
         raise RuntimeError("Run worktree cannot be a symlink")
     if worktree.exists():
@@ -114,6 +117,7 @@ def _ensure_worktree(repo: Path, worktree: Path, branch: str, base_sha: str) -> 
 
 
 def _interrupted_result(store: RunStore, record: dict) -> dict:
+    """Preserve available evidence without repeating an uncertain call."""
     result = record["result"] or {}
     result.update(
         {
@@ -128,6 +132,9 @@ def _interrupted_result(store: RunStore, record: dict) -> dict:
         }
     )
     worktree = Path(record["worktree"])
+    if record["status"] == "planning":
+        store.transition(record["id"], "planning", "needs_review", result=result)
+        return result
     if worktree.is_symlink():
         result["worktree_error"] = "Run worktree is a symlink"
     elif worktree.exists():
@@ -233,7 +240,7 @@ def execute_task(
         if record["status"] in FINAL_STATES:
             return record["result"] or {"id": run_id, "status": record["status"]}
         owned = True
-        if record["status"] in {"executing", "validating"}:
+        if record["status"] in {"planning", "executing", "validating"}:
             return _interrupted_result(store, record)
         base_sha = record["base_sha"]
         branch = record["branch"]
@@ -305,7 +312,12 @@ def execute_task(
     except Exception as exc:
         record = store.get(run_id)
         if owned and record is not None and record["status"] in ACTIVE_STATES:
-            store.transition(run_id, record["status"], "failed", result={"error": str(exc)})
+            store.transition(
+                run_id,
+                record["status"],
+                "failed",
+                result={**(record["result"] or {}), "error": str(exc)},
+            )
         raise
     finally:
         store.close()

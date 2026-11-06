@@ -32,6 +32,8 @@ def run(
     base_url = base_url or os.getenv("ENGINEER_BASE_URL", "http://127.0.0.1:11434/v1")
     if run_id is not None and not worker:
         raise SystemExit("--run-id requires --worker")
+    if run_id is not None:
+        run_id = str(run_id)
     if worker:
         if check is None:
             checks = []

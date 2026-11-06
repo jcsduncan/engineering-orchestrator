@@ -11,7 +11,7 @@ FINAL_STATES = {"ready_for_review", "needs_review", "failed"}
 TRANSITIONS = {
     "running": {"needs_review", "failed"},
     "accepted": {"planning", "failed"},
-    "planning": {"workspace_pending", "failed"},
+    "planning": {"workspace_pending", "needs_review", "failed"},
     "workspace_pending": {"executing", "failed"},
     "executing": {"validating", "needs_review", "failed"},
     "validating": {"ready_for_review", "needs_review", "failed"},
@@ -23,6 +23,7 @@ class RunStore:
     """Persist run checkpoints and transition events in one SQLite database."""
 
     def __init__(self, path: Path) -> None:
+        """Open state storage and migrate older run records in place."""
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, timeout=30)
         self.db.row_factory = sqlite3.Row
@@ -55,9 +56,11 @@ class RunStore:
             )
 
     def close(self) -> None:
+        """Close the database connection."""
         self.db.close()
 
     def get(self, run_id: str) -> dict[str, Any] | None:
+        """Load one run with decoded JSON fields."""
         row = self.db.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         if row is None:
             return None
@@ -79,6 +82,7 @@ class RunStore:
         snapshot: dict[str, Any],
         providers: dict[str, Any],
     ) -> None:
+        """Create an accepted run and its first event atomically."""
         now = int(time.time())
         with self.db:
             self.db.execute(
@@ -113,6 +117,7 @@ class RunStore:
         result: dict[str, Any] | object = _UNSET,
         detail: dict[str, Any] | None = None,
     ) -> None:
+        """Change state only when the recorded state matches the expected one."""
         if status not in TRANSITIONS.get(expected, set()):
             raise ValueError(f"Invalid run transition: {expected} -> {status}")
         assignments = ["status = ?"]
@@ -137,6 +142,7 @@ class RunStore:
             )
 
     def save_progress(self, run_id: str, status: str, result: dict[str, Any]) -> None:
+        """Checkpoint partial evidence while a run stays in one state."""
         with self.db:
             cursor = self.db.execute(
                 "UPDATE runs SET result_json = ? WHERE id = ? AND status = ?",
@@ -146,6 +152,7 @@ class RunStore:
                 raise RuntimeError(f"Run {run_id} is no longer in {status}")
 
     def events(self, run_id: str) -> list[str]:
+        """Return the persisted status history in event order."""
         return [
             row[0]
             for row in self.db.execute(
