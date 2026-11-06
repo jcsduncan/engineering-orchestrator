@@ -23,6 +23,7 @@ class QueuedRun:
     snapshot: TaskSnapshot
     status: str
     cancel_requested: bool = False
+    resource_held: bool = False
 
 
 class RunQueue:
@@ -49,6 +50,7 @@ class RunQueue:
                         ('queued', 'running', 'completed', 'failed', 'cancelled', 'needs_review')),
                     cancel_requested INTEGER NOT NULL DEFAULT 0,
                     cancel_reason TEXT,
+                    resource_held INTEGER NOT NULL DEFAULT 0,
                     result_json TEXT,
                     created_at INTEGER NOT NULL,
                     started_at INTEGER,
@@ -75,11 +77,20 @@ class RunQueue:
             TaskSnapshot(**json.loads(row["snapshot_json"])),
             row["status"],
             bool(row["cancel_requested"]),
+            bool(row["resource_held"]),
         )
 
     def get(self, run_id: str) -> QueuedRun | None:
         row = self.db.execute("SELECT * FROM scheduled_runs WHERE run_id = ?", (run_id,)).fetchone()
         return self._decode(row) if row is not None else None
+
+    def interrupted(self) -> list[QueuedRun]:
+        """List runs whose capacity is held until orphan cleanup is confirmed."""
+        rows = self.db.execute(
+            """SELECT * FROM scheduled_runs WHERE status = 'needs_review'
+            AND resource_held = 1 ORDER BY sequence"""
+        ).fetchall()
+        return [self._decode(row) for row in rows]
 
     def enqueue(self, claim: IssueClaim) -> QueuedRun:
         """Queue one immutable claim once, keeping retries as distinct generations."""
@@ -109,7 +120,7 @@ class RunQueue:
             self.db.execute("BEGIN IMMEDIATE")
             running = self.db.execute(
                 "SELECT repository_key, COUNT(*) AS count FROM scheduled_runs "
-                "WHERE status = 'running' GROUP BY repository_key"
+                "WHERE resource_held = 1 GROUP BY repository_key"
             ).fetchall()
             occupancy = {row["repository_key"]: row["count"] for row in running}
             if sum(occupancy.values()) >= self.max_running:
@@ -128,7 +139,8 @@ class RunQueue:
             if row is None:
                 return None
             self.db.execute(
-                "UPDATE scheduled_runs SET status = 'running', started_at = ? WHERE run_id = ?",
+                """UPDATE scheduled_runs SET status = 'running', resource_held = 1,
+                started_at = ? WHERE run_id = ?""",
                 (int(time.time()), row["run_id"]),
             )
             return self.get(row["run_id"])
@@ -136,26 +148,30 @@ class RunQueue:
     def request_cancel(self, run_id: str, reason: str) -> QueuedRun:
         if not reason.strip():
             raise ValueError("Cancellation reason is required")
-        with self.db:
-            self.db.execute("BEGIN IMMEDIATE")
-            row = self.db.execute(
+        with sqlite3.connect(self.path, timeout=30) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
                 "SELECT * FROM scheduled_runs WHERE run_id = ?", (run_id,)
             ).fetchone()
             if row is None:
                 raise ValueError("Unknown scheduled run")
             if row["status"] == "queued":
-                self.db.execute(
+                connection.execute(
                     """UPDATE scheduled_runs SET status = 'cancelled', cancel_requested = 1,
                     cancel_reason = ?, result_json = ?, finished_at = ? WHERE run_id = ?""",
                     (reason, json.dumps({"cancel_reason": reason}), int(time.time()), run_id),
                 )
             elif row["status"] == "running":
-                self.db.execute(
+                connection.execute(
                     """UPDATE scheduled_runs SET cancel_requested = 1, cancel_reason = ?
                     WHERE run_id = ?""",
                     (reason, run_id),
                 )
-        return self.get(run_id)
+            updated = connection.execute(
+                "SELECT * FROM scheduled_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return self._decode(updated)
 
     def is_cancel_requested(self, run_id: str) -> bool:
         """Read a cancellation signal from any execution thread."""
@@ -179,7 +195,8 @@ class RunQueue:
                 status = "cancelled"
                 result = {**result, "cancel_reason": row["cancel_reason"]}
             self.db.execute(
-                """UPDATE scheduled_runs SET status = ?, result_json = ?, finished_at = ?
+                """UPDATE scheduled_runs SET status = ?, resource_held = 0,
+                result_json = ?, finished_at = ?
                 WHERE run_id = ?""",
                 (status, json.dumps(result), int(time.time()), run_id),
             )
@@ -192,7 +209,7 @@ class RunQueue:
         return json.loads(row[0]) if row is not None and row[0] else None
 
     def recover_interrupted(self) -> list[str]:
-        """Preserve uncertain running work after a controller restart without rerunning it."""
+        """Quarantine uncertain work while retaining its resource reservation."""
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             rows = self.db.execute(
@@ -209,6 +226,17 @@ class RunQueue:
                     ),
                 )
         return [row["run_id"] for row in rows]
+
+    def acknowledge_stopped(self, run_id: str) -> None:
+        """Release an interrupted run's slot only after its process/container is stopped."""
+        with self.db:
+            cursor = self.db.execute(
+                """UPDATE scheduled_runs SET resource_held = 0
+                WHERE run_id = ? AND status = 'needs_review' AND resource_held = 1""",
+                (run_id,),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Run has no interrupted resource reservation")
 
 
 def run_queued(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import threading
 import time
 from dataclasses import replace
@@ -40,6 +41,20 @@ def test_queue_is_idempotent_and_rejects_changed_snapshot(tmp_path: Path) -> Non
         queue.enqueue(changed)
     with pytest.raises(ValueError, match="Only active"):
         queue.enqueue(IssueClaim(first.snapshot, "cancelled"))
+    queue.close()
+
+
+def test_scheduler_rejects_invalid_limits_and_competing_dispatch(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="positive integers"):
+        RunQueue(tmp_path / "bad.sqlite3", max_running=0, max_per_repository=1)
+    queue = RunQueue(tmp_path / "state.sqlite3", max_running=1, max_per_repository=1)
+    queue.enqueue(claim("one", 1, 1))
+    lock_path = tmp_path / "scheduler.lock"
+    with lock_path.open("a+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(RuntimeError, match="another controller"):
+            run_queued(queue, lambda item, cancelled: {}, lock_path=lock_path)
+    assert queue.get("one").status == "queued"
     queue.close()
 
 
@@ -123,6 +138,48 @@ def test_cancellation_is_durable_and_preserves_partial_result(tmp_path: Path) ->
     queue.close()
 
 
+def test_cancellation_does_not_stop_an_independent_run(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite3"
+    queue = RunQueue(path, max_running=2, max_per_repository=1)
+    queue.enqueue(claim("cancel-me", 1, 1))
+    queue.enqueue(claim("keep-going", 2, 1))
+    both_started = threading.Event()
+    lock = threading.Lock()
+    started = 0
+
+    def cancel_after_start():
+        assert both_started.wait(2)
+        queue.request_cancel("cancel-me", "Issue closed")
+
+    canceller = threading.Thread(target=cancel_after_start)
+    canceller.start()
+
+    def execute(item, should_cancel):
+        nonlocal started
+        with lock:
+            started += 1
+            if started == 2:
+                both_started.set()
+        assert both_started.wait(2)
+        if item.run_id == "cancel-me":
+            deadline = time.monotonic() + 2
+            while not should_cancel() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert should_cancel()
+            return {"status": "cancelled", "partial_output": "first step"}
+        return {"status": "completed", "result": "unaffected"}
+
+    completed = run_queued(queue, execute, lock_path=tmp_path / "scheduler.lock")
+    canceller.join(timeout=2)
+    assert {item.run_id: item.status for item in completed} == {
+        "cancel-me": "cancelled",
+        "keep-going": "completed",
+    }
+    assert queue.result("cancel-me")["partial_output"] == "first step"
+    assert queue.result("keep-going")["result"] == "unaffected"
+    queue.close()
+
+
 def test_restart_keeps_queue_and_quarantines_uncertain_run(tmp_path: Path) -> None:
     path = tmp_path / "state.sqlite3"
     first = RunQueue(path, max_running=1, max_per_repository=1)
@@ -137,8 +194,21 @@ def test_restart_keeps_queue_and_quarantines_uncertain_run(tmp_path: Path) -> No
         lambda item, should_cancel: executed.append(item.run_id) or {"status": "completed"},
         lock_path=tmp_path / "scheduler.lock",
     )
+    assert completed == []
+    assert recovered.get("uncertain").resource_held is True
+    assert [item.run_id for item in recovered.interrupted()] == ["uncertain"]
+    assert recovered.get("waiting").status == "queued"
+    recovered.acknowledge_stopped("uncertain")
+    assert recovered.interrupted() == []
+    completed = run_queued(
+        recovered,
+        lambda item, should_cancel: executed.append(item.run_id) or {"status": "completed"},
+        lock_path=tmp_path / "scheduler.lock",
+    )
     assert executed == ["waiting"]
     assert [item.run_id for item in completed] == ["waiting"]
     assert recovered.get("uncertain").status == "needs_review"
     assert recovered.result("uncertain")["reason"] == "Controller stopped while run was active"
+    with pytest.raises(ValueError, match="no interrupted"):
+        recovered.acknowledge_stopped("uncertain")
     recovered.close()
