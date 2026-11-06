@@ -13,7 +13,7 @@ flowchart LR
     Task[Task source] --> Controller[Controller]
     Controller --> Planner[Local planning model]
     Controller --> Workspace[Per-run workspace]
-    Workspace --> Worker[Coding worker]
+    Workspace --> Worker[Worker runtime]
     Workspace --> Checks[Validation]
     Controller --> Records[(Run records)]
     Controller --> Review[Review artifact]
@@ -25,11 +25,13 @@ flowchart LR
 | Controller | Owns run state, limits, retries, tool access, and publication. |
 | Local planning model | Proposes steps, checks, and risks; its output is advisory. |
 | Workspace | Pins the base commit and separates each run's files and processes. |
-| Coding worker | Investigates and edits within the workspace. Its model is replaceable. |
+| Worker runtime | Investigates and edits within the workspace. It may coordinate its own agents; the controller treats it as one execution. |
 | Validation | Runs explicit checks and records results against the final diff. |
 | Review artifact | Presents a pull request or investigation report with findings, checks, and uncertainty. |
 
 Planner and worker providers expose independent typed contracts. The controller records their identities and sanitized configuration summaries with each run.
+
+The controller schedules engineering runs, not individual agents inside a worker runtime. It supplies one task and worktree, then observes one bounded result. The runtime decides whether to use one agent or coordinate several. The controller retains the run's permissions, resource limits, cancellation, validation, state, and publication. Internal agent roles, messages, and task lists are not controller state.
 
 ## GitHub issue intake
 

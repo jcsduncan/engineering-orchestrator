@@ -19,3 +19,4 @@ nav:
       - Issue intake: adr/004-issue-intake.md
       - Automatic releases: adr/005-automatic-releases.md
       - Delivery evidence: adr/006-delivery-evidence.md
+      - Worker agent coordination: adr/007-worker-owned-agent-coordination.md
