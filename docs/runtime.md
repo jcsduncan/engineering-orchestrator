@@ -40,3 +40,17 @@ The CLI resolves the local image to its immutable ID, then runs the worker and c
 `PlanningProvider` and `WorkerProvider` define the programmatic interfaces. `OpenAICompatiblePlanner` keeps planning on the configured model endpoint; `CommandWorker` runs the selected CLI. `execute_task` accepts other implementations independently of the CLI defaults.
 
 Each run records provider names and a sanitized configuration summary in `providers_json` and its result. The planner record includes model, endpoint origin, and timeout. The worker record includes executable name, command hash, and timeout. Existing SQLite run databases gain the new column on use.
+
+## GitHub issue reconciliation
+
+`engineer-issues` runs one reconciliation pass for a configured GitHub App installation and repository:
+
+```bash
+ENGINEER_GITHUB_TOKEN=... uv run --locked engineer-issues jcsduncan engineering-orchestrator 12345
+```
+
+The token needs read access to repository issues and dependencies. The command prints newly claimed tasks and revoked claims as JSON. Schedule repeated passes outside the command. It fetches the repository ID, lists issues labelled `agent:run`, then fetches each issue and its blocking relationships again before claiming. Only open issues with no open blockers are claimed. Pull requests are excluded.
+
+Claims use the same SQLite database as runs. Each claim stores an immutable title, body, objective, acceptance criteria, issue URL, and update time. The unique key is installation ID, repository ID, issue number, and generation; the returned run ID is stable for that key. A repeated pass does not claim the issue again, even if its text changes. To claim a finished or cancelled issue again, specify both `--issue-number` and an increased `--generation`. An increased generation cannot trigger reruns of other issues in the repository.
+
+Closing the issue or removing `agent:run` revokes an unfinished claim. The JSON cancellation result includes its run ID and reason. Pending cancellations appear on every pass until the run controller stops the work and calls `IssueClaimStore.acknowledge_cancel`. Issue text is data; it cannot set worker commands, checks, or permissions. An API failure aborts the pass before changing claims.
