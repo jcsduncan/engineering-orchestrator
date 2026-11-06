@@ -41,6 +41,10 @@ Removing `agent:run` or closing the issue cancels unfinished work. The controlle
 
 The polling interface returns claims until dispatch is acknowledged and cancellations until work has stopped. A unique SQLite key covers installation ID, repository ID, issue number, and generation. Claims snapshot the current issue text and use GitHub's native blocking relationships. The controller consumes both decisions by run ID.
 
+## Scheduling
+
+The controller queues each claimed run once by run ID. A SQLite transaction dispatches the oldest eligible run while enforcing global and per-repository limits. Independent repositories can run concurrently; a busy repository does not block another. A single controller lock prevents competing dispatch loops. After a restart, queued runs remain eligible and interrupted running entries need review rather than automatic re-execution. Cancellation requests stay durable until the execution callback stops the run.
+
 ## Run contract
 
 Input: task identity, task text, repository, acceptance criteria, base commit, execution limits, and validation commands. Repeated delivery of the same task must resolve to the same run ID.

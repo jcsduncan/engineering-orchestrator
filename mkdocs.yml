@@ -7,6 +7,7 @@ nav:
   - Home: index.md
   - High-level design: HLD.md
   - Runtime: runtime.md
+  - Scheduling: scheduler.md
   - Tooling: tooling.md
   - Coding standards: standards.md
   - Decisions:
