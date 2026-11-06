@@ -9,7 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from engineer.core import plan_task, run_task
+from engineer.core import execute_task, plan_task, run_task
+from engineer.providers import (
+    CommandWorker,
+    OpenAICompatiblePlanner,
+    Plan,
+    ProviderInfo,
+    WorkerResult,
+)
 
 
 class PlannerHandler(BaseHTTPRequestHandler):
@@ -78,14 +85,32 @@ def test_local_plan(planner_url):
 def test_plan_rejects_invalid_response(monkeypatch, content, message):
     response = {"choices": [{"message": {"content": content}}]}
     monkeypatch.setattr(
-        "engineer.core.urllib.request.urlopen",
+        "engineer.providers.urllib.request.urlopen",
         lambda _request, timeout: BytesIO(json.dumps(response).encode()),
     )
     with pytest.raises(ValueError, match=message):
         plan_task("Do something", "local-test", "http://localhost:11434/v1")
 
 
-def test_run_records_worktree_and_checks(planner_url, tmp_path):
+def test_plan_rejects_malformed_chat_completion(monkeypatch):
+    monkeypatch.setattr(
+        "engineer.providers.urllib.request.urlopen",
+        lambda _request, timeout: BytesIO(b'{"choices": []}'),
+    )
+    with pytest.raises(ValueError, match="Planner response is not valid chat-completion JSON"):
+        plan_task("Do something", "local-test", "http://localhost:11434/v1")
+
+
+def test_plan_rejects_invalid_json(monkeypatch):
+    monkeypatch.setattr(
+        "engineer.providers.urllib.request.urlopen",
+        lambda _request, timeout: BytesIO(b"not json"),
+    )
+    with pytest.raises(ValueError, match="Planner response is not valid chat-completion JSON"):
+        plan_task("Do something", "local-test", "http://localhost:11434/v1")
+
+
+def make_repo(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -97,6 +122,22 @@ def test_run_records_worktree_and_checks(planner_url, tmp_path):
     (repo / "README.md").write_text("before\n")
     subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "initial"], check=True)
+    return repo
+
+
+def test_run_records_worktree_and_checks(planner_url, tmp_path):
+    repo = make_repo(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    with sqlite3.connect(state_dir / "runs.sqlite3") as db:
+        db.execute(
+            """CREATE TABLE runs (
+                id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, repo TEXT NOT NULL,
+                base_sha TEXT NOT NULL, branch TEXT NOT NULL, worktree TEXT NOT NULL,
+                status TEXT NOT NULL, task TEXT NOT NULL, plan_json TEXT NOT NULL,
+                result_json TEXT
+            )"""
+        )
     worker = [
         sys.executable,
         "-c",
@@ -112,10 +153,123 @@ def test_run_records_worktree_and_checks(planner_url, tmp_path):
         base_url=planner_url,
         worker=worker,
         checks=[f"{sys.executable} -c '{check_script}'"],
-        state_dir=tmp_path / "state",
+        state_dir=state_dir,
     )
     assert result["status"] == "ready_for_review"
     assert (Path(result["worktree"]) / "README.md").exists()
     assert (repo / "README.md").read_text() == "before\n"
     with sqlite3.connect(tmp_path / "state/runs.sqlite3") as db:
         assert db.execute("SELECT status FROM runs").fetchone()[0] == "ready_for_review"
+        providers = json.loads(db.execute("SELECT providers_json FROM runs").fetchone()[0])
+    assert providers == result["providers"]
+    assert providers["planner"]["configuration"]["model"] == "local-test"
+    assert providers["worker"]["configuration"]["executable"] == Path(sys.executable).name
+
+
+def test_injected_providers_execute_independently(tmp_path):
+    repo = make_repo(tmp_path)
+
+    class Planner:
+        info = ProviderInfo("test-planner", {"variant": "fixed"})
+
+        def plan(self, task):
+            assert task == "Update readme"
+            return Plan("Update readme", ["Edit"], ["Check"], [])
+
+    class Worker:
+        info = ProviderInfo("test-worker", {"variant": "fixed"})
+
+        def execute(self, prompt, worktree, run_id):
+            assert "Update readme" in prompt
+            assert run_id
+            (worktree / "README.md").write_text("after\n")
+            return WorkerResult(0, "edited", "")
+
+    result = execute_task(
+        task="Update readme",
+        repo=repo,
+        planner=Planner(),
+        worker=Worker(),
+        checks=[f"{sys.executable} -c 'print(1)'"],
+        state_dir=tmp_path / "state",
+    )
+    assert result["status"] == "ready_for_review"
+    assert result["providers"]["planner"]["name"] == "test-planner"
+    assert result["providers"]["worker"]["name"] == "test-worker"
+
+
+def test_invalid_planning_provider_output_is_rejected(tmp_path):
+    class Planner:
+        info = ProviderInfo("broken", {})
+
+        def plan(self, _task):
+            return Plan("", [], [], [])
+
+    class Worker:
+        info = ProviderInfo("unused", {})
+
+        def execute(self, _prompt, _worktree, _run_id):
+            pytest.fail("Worker must not run")
+
+    with pytest.raises(ValueError, match="Planning provider returned an invalid Plan"):
+        execute_task(
+            task="task",
+            repo=make_repo(tmp_path),
+            planner=Planner(),
+            worker=Worker(),
+            checks=[],
+            state_dir=tmp_path / "state",
+        )
+
+
+def test_invalid_worker_provider_output_fails_run(tmp_path):
+    class Planner:
+        info = ProviderInfo("test", {})
+
+        def plan(self, _task):
+            return Plan("Task", [], [], [])
+
+    class Worker:
+        info = ProviderInfo("broken", {})
+
+        def execute(self, _prompt, _worktree, _run_id):
+            return {"exit_code": 0}
+
+    state_dir = tmp_path / "state"
+    with pytest.raises(ValueError, match="Worker provider returned an invalid WorkerResult"):
+        execute_task(
+            task="task",
+            repo=make_repo(tmp_path),
+            planner=Planner(),
+            worker=Worker(),
+            checks=[],
+            state_dir=state_dir,
+        )
+    with sqlite3.connect(state_dir / "runs.sqlite3") as db:
+        assert db.execute("SELECT status FROM runs").fetchone()[0] == "failed"
+
+
+def test_provider_metadata_omits_credentials():
+    planner = OpenAICompatiblePlanner(
+        "local-test", "http://user:secret@localhost:11434/v1?key=secret"
+    )
+    worker = CommandWorker(("qwen", "--token=secret"))
+    metadata = json.dumps({"planner": planner.info.__dict__, "worker": worker.info.__dict__})
+    assert "secret" not in metadata
+    assert planner.info.configuration["endpoint"] == "http://localhost:11434"
+
+
+def test_provider_timeout_errors(monkeypatch, tmp_path):
+    def timeout(*_args, **_kwargs):
+        raise TimeoutError("socket timed out")
+
+    monkeypatch.setattr("engineer.providers.urllib.request.urlopen", timeout)
+    with pytest.raises(TimeoutError, match="Planner timed out after 3 seconds"):
+        OpenAICompatiblePlanner("local-test", "http://localhost:11434/v1", 3).plan("task")
+
+    def worker_timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(["qwen"], 2)
+
+    monkeypatch.setattr("engineer.providers.subprocess.run", worker_timeout)
+    outcome = CommandWorker(("qwen",), 2).execute("task", tmp_path, "run-1")
+    assert outcome == WorkerResult(None, "", "Worker timed out after 2 seconds")
