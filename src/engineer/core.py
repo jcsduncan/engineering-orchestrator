@@ -412,6 +412,15 @@ def execute_task(
     if type(check_timeout) is not int or check_timeout <= 0:
         raise ValueError("Check timeout must be positive")
     providers = _provider_metadata(planner, worker)
+    if worker_profile is not None:
+        bound = providers["worker"]
+        configuration = bound["configuration"]
+        if (
+            bound["name"] != "container-command"
+            or configuration.get("image") != worker_profile.image_digest
+            or configuration.get("command_sha256") != worker_profile.command_sha256
+        ):
+            raise ValueError("Worker provider does not match verified capability profile")
     request = {
         "task": task,
         "repo": str(repo),

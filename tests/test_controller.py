@@ -198,6 +198,7 @@ def test_controller_passes_verified_mode_to_worker(
         run_pass(config, execute_run=execute)
         assert calls[0]["worker_mode"] == "subagents"
         assert calls[0]["worker_profile"] == selected
+        assert calls[0]["execution_image"] == selected.image_digest
     finally:
         claims.close()
 

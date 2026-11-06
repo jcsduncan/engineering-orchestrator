@@ -73,7 +73,7 @@ A worker command is one runtime invocation per engineering run. That runtime may
 }
 ```
 
-`engineer-controller` accepts the same object as `worker_profile` in its trusted JSON configuration, with `worker_mode` beside `worker` and `image`. It checks both before claim handoff. The task `--mode` (`implementation` or `investigation`) is independent of the worker execution mode.
+`engineer-controller` accepts the same object as `worker_profile` in its trusted JSON configuration, with `worker_mode` beside `worker` and `image`. It checks the command and local image before claim handoff, then dispatches that immutable image ID so a changed tag cannot switch the worker mid-pass. The task `--mode` (`implementation` or `investigation`) is independent of the worker execution mode. Direct `execute_task` integrations must expose the matching container image ID and command hash through their `WorkerProvider.info` metadata when supplying a profile.
 
 Each run records provider names and a sanitized configuration summary in `providers_json` and its result. The planner record includes model, endpoint origin, and timeout. The worker record includes executable name, command hash, and timeout. Existing SQLite run databases gain the new column on use.
 

@@ -489,7 +489,13 @@ def test_implementation_request_keeps_legacy_digest_shape(tmp_path):
 
 def test_worker_mode_and_profile_are_bound_to_run_identity(tmp_path, monkeypatch):
     class Worker:
-        info = ProviderInfo("test", {})
+        info = ProviderInfo(
+            "container-command",
+            {
+                "image": "sha256:" + "a" * 64,
+                "command_sha256": command_digest(("worker", "-p")),
+            },
+        )
 
         def execute(self, prompt, _worktree, _run_id):
             assert "runtime's subagents" in prompt
@@ -530,6 +536,12 @@ def test_worker_mode_and_profile_are_bound_to_run_identity(tmp_path, monkeypatch
         execute_task(**{**kwargs, "worker_mode": "single"})
     with pytest.raises(ValueError, match="different task or configuration"):
         execute_task(**{**kwargs, "worker_profile": replace(selected, version="2.2.0")})
+
+    class DifferentWorker(Worker):
+        info = ProviderInfo("command", {"command_sha256": command_digest(("worker", "-p"))})
+
+    with pytest.raises(ValueError, match="provider does not match"):
+        execute_task(**{**kwargs, "worker": DifferentWorker(), "run_id": "unbound-run"})
 
     monkeypatch.setattr(
         "engineer.core.ContainerRuntime.resolve_image",

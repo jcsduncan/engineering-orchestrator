@@ -4,7 +4,7 @@ Status: Accepted
 
 ## Decision
 
-Select `single`, `subagents`, or `agent_teams` as an execution mode for one worker runtime. A trusted worker profile records the runtime version, immutable image ID, command hash, headless invocation, and a supported, unsupported, or unverified state for each capability with probe evidence for supported claims. The controller checks the requested mode, command, and local image ID before accepting an issue claim, then binds the selected profile to the run snapshot. Unknown or unsupported modes cannot run. Existing command workers retain the single-worker default.
+Select `single`, `subagents`, or `agent_teams` as an execution mode for one worker runtime. A trusted worker profile records the runtime version, immutable image ID, command hash, headless invocation, and a supported, unsupported, or unverified state for each capability with probe evidence for supported claims. The controller checks the requested mode, command, and local image ID before accepting an issue claim, dispatches with that immutable image ID, then binds the selected profile to the run snapshot. Direct provider calls also check the worker's recorded image and command identity. Unknown or unsupported modes cannot run. Existing command workers retain the single-worker default.
 
 ## Reason
 

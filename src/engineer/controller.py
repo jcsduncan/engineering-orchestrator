@@ -352,7 +352,11 @@ def run_pass(
                 worker_timeout=settings.worker_timeout,
                 check_timeout=settings.check_timeout,
                 run_id=item.run_id,
-                execution_image=settings.image,
+                execution_image=(
+                    settings.worker_profile.image_digest
+                    if settings.worker_profile is not None
+                    else settings.image
+                ),
                 container_cpus=settings.container_cpus,
                 container_memory_mb=settings.container_memory_mb,
                 container_pids=settings.container_pids,
