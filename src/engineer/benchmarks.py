@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from .container import ContainerRuntime
 from .core import run_task
 
 
@@ -170,6 +171,8 @@ def run_suite(
     model: str,
     base_url: str,
     worker: list[str],
+    image: str,
+    container_network: str = "none",
     interventions: dict[str, int] | None = None,
     costs_usd: dict[str, float] | None = None,
 ) -> dict[str, Any]:
@@ -178,6 +181,8 @@ def run_suite(
     planner_origin = _origin(base_url)
     if not worker:
         raise ValueError("Benchmark worker command is required")
+    if not image:
+        raise ValueError("Benchmark container image is required")
     known_ids = {case["id"] for case in cases}
     intervention_values = interventions if interventions is not None else {}
     cost_values = costs_usd if costs_usd is not None else {}
@@ -204,7 +209,14 @@ def run_suite(
         fixture = manifest.parent / "fixtures" / case["fixture"]
         fixture_digest, base_sha = _fixture_repo(fixture, case_dir / "repo")
         started = time.monotonic()
+        runtime = None
         try:
+            git_metadata = Path(
+                _git(case_dir / "repo", "rev-parse", "--path-format=absolute", "--git-common-dir")
+            )
+            runtime = ContainerRuntime(
+                image, git_metadata, network=container_network
+            ).resolve_image()
             result = run_task(
                 task=case["task"],
                 repo=case_dir / "repo",
@@ -215,6 +227,8 @@ def run_suite(
                 state_dir=case_dir / "state",
                 run_id=case["id"],
                 mode=case["mode"],
+                execution_image=runtime.image,
+                container_network=container_network,
             )
         except Exception as exc:
             result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
@@ -222,21 +236,17 @@ def run_suite(
         oracle_result = None
         if case["mode"] == "implementation" and result.get("status") == "ready_for_review":
             try:
-                completed = subprocess.run(
-                    case["oracle"],
-                    cwd=result["worktree"],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                    check=False,
+                assert runtime is not None
+                completed = runtime.run(
+                    case["oracle"], Path(result["worktree"]), case["id"], 120, 20_000
                 )
                 oracle_result = {
-                    "passed": completed.returncode == 0,
-                    "exit_code": completed.returncode,
-                    "stdout": completed.stdout[-20_000:],
-                    "stderr": completed.stderr[-20_000:],
+                    "passed": completed.exit_code == 0,
+                    "exit_code": completed.exit_code,
+                    "stdout": completed.stdout,
+                    "stderr": completed.stderr,
                 }
-            except (OSError, subprocess.TimeoutExpired) as exc:
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
                 oracle_result = {"passed": False, "error": str(exc)}
         score = score_case(
             case,
@@ -251,6 +261,7 @@ def run_suite(
             "mode": case["mode"],
             "fixture_sha256": fixture_digest,
             "base_sha": base_sha,
+            "image_id": runtime.image if runtime is not None else None,
             "result": result,
             "oracle": oracle_result,
             "score": score,
@@ -262,7 +273,12 @@ def run_suite(
         "model": model,
         "planner_origin": planner_origin,
         "worker_executable": Path(worker[0]).name if worker else None,
-        "cases": [{"id": record["case"], "score": record["score"]} for record in records],
+        "image": image,
+        "container_network": container_network,
+        "cases": [
+            {"id": record["case"], "image_id": record["image_id"], "score": record["score"]}
+            for record in records
+        ],
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     return summary

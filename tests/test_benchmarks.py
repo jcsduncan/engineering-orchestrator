@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from engineer.benchmarks import _fixture_repo, load_cases, run_suite, score_case
+from engineer.container import ContainerResult, ContainerRuntime
 
 
 def test_fixture_repository_is_reproducible(tmp_path: Path) -> None:
@@ -66,7 +67,14 @@ def test_score_distinguishes_inconclusive_from_failure() -> None:
     )
 
 
-def test_suite_retains_artifacts_when_planner_unavailable(tmp_path: Path) -> None:
+def test_suite_retains_artifacts_when_planner_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ContainerRuntime, "resolve_image", lambda self: self)
+    monkeypatch.setattr(
+        "engineer.benchmarks.run_task",
+        lambda **kwargs: (_ for _ in ()).throw(ConnectionRefusedError("planner unavailable")),
+    )
     manifest = Path(__file__).parents[1] / "benchmarks/tasks.json"
     output = tmp_path / "artifacts"
     summary = run_suite(
@@ -75,6 +83,7 @@ def test_suite_retains_artifacts_when_planner_unavailable(tmp_path: Path) -> Non
         model="unavailable",
         base_url="http://127.0.0.1:1/v1",
         worker=["python", "-c"],
+        image="fixture-image",
     )
     assert len(summary["cases"]) == 2
     assert all(item["score"]["outcome"] == "failed" for item in summary["cases"])
@@ -91,6 +100,7 @@ def test_suite_retains_artifacts_when_planner_unavailable(tmp_path: Path) -> Non
             model="unavailable",
             base_url="http://127.0.0.1:1/v1",
             worker=["python", "-c"],
+            image="fixture-image",
         )
 
 
@@ -98,8 +108,25 @@ def test_suite_scores_implementation_oracle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest = Path(__file__).parents[1] / "benchmarks/tasks.json"
+    monkeypatch.setattr(ContainerRuntime, "resolve_image", lambda self: self)
+
+    def fake_container_run(
+        self: ContainerRuntime,
+        argv: list[str],
+        worktree: Path,
+        run_id: str,
+        timeout: int,
+        limit: int,
+    ) -> ContainerResult:
+        assert self.image == "fixture-image"
+        assert run_id == "negative_totals"
+        completed = subprocess.run(argv, cwd=worktree, capture_output=True, text=True, check=False)
+        return ContainerResult(completed.returncode, completed.stdout, completed.stderr)
+
+    monkeypatch.setattr(ContainerRuntime, "run", fake_container_run)
 
     def fake_run_task(**kwargs: object) -> dict:
+        assert kwargs["execution_image"] == "fixture-image"
         repo = kwargs["repo"]
         assert isinstance(repo, Path)
         worktree = repo.parent / "worker-tree"
@@ -137,11 +164,13 @@ def test_suite_scores_implementation_oracle(
         model="fixture-model",
         base_url="http://user:secret@127.0.0.1:11434/v1",
         worker=["worker"],
+        image="fixture-image",
         interventions={"negative_totals": 0},
         costs_usd={"negative_totals": 0.5},
     )
     assert all(case["score"]["correctness"] for case in summary["cases"])
     assert summary["planner_origin"] == "http://127.0.0.1:11434"
+    assert summary["cases"][0]["image_id"] == "fixture-image"
     assert summary["cases"][0]["score"]["cost_usd"] == 0.5
     assert json.loads((tmp_path / "out/negative_totals/result.json").read_text())["oracle"][
         "passed"
@@ -157,6 +186,7 @@ def test_suite_rejects_invalid_intervention_map(tmp_path: Path) -> None:
             model="model",
             base_url="http://localhost:11434/v1",
             worker=["worker"],
+            image="fixture-image",
             interventions=[],  # type: ignore[arg-type]
         )
     assert not (tmp_path / "out").exists()
