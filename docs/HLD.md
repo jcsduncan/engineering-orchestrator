@@ -21,13 +21,21 @@ flowchart LR
 
 | Component | Responsibility |
 | --- | --- |
-| Task source | Supplies the objective, repository, and acceptance criteria. |
+| Task source | Supplies the objective, repository, and acceptance criteria. GitHub Issues is the issue source. |
 | Controller | Owns run state, limits, retries, tool access, and publication. |
 | Local planning model | Proposes steps, checks, and risks; its output is advisory. |
 | Workspace | Pins the base commit and separates each run's files and processes. |
 | Coding worker | Investigates and edits within the workspace. Its model is replaceable. |
 | Validation | Runs explicit checks and records results against the final diff. |
 | Review artifact | Presents a pull request or investigation report with findings, checks, and uncertainty. |
+
+## GitHub issue intake
+
+An installed GitHub App observes only configured repositories. An open issue with the `agent:run` label is eligible; opening or editing an unlabelled issue does not start work. Webhook events prompt intake, and a periodic scan reconciles eligible issues after missed or out-of-order deliveries. Both paths use the same claim operation. Without a reachable HTTPS webhook endpoint, the scan is the sole trigger.
+
+The webhook handler verifies `X-Hub-Signature-256`, records the delivery, and acknowledges it without running a model. The controller fetches the current issue before claiming it, then stores an immutable task snapshot. A unique key on installation, repository, issue number, and run generation prevents duplicate runs. An edit does not change an active snapshot or silently restart a finished run. An explicit new generation is required to rerun.
+
+Removing `agent:run` or closing the issue cancels unfinished work. The controller records the reason and the evidence collected so far. Issue text remains untrusted input; it cannot change tool permissions or execution limits.
 
 ## Run contract
 
