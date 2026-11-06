@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from engineer.container import ContainerResult, ContainerRuntime
+from engineer.container import (
+    ContainerCheckRunner,
+    ContainerResult,
+    ContainerRuntime,
+    ContainerWorker,
+)
 from engineer.core import run_task
 from engineer.providers import Plan
 from engineer.validation import diff_sha256
@@ -84,6 +89,86 @@ def test_container_command_limits_mounts_and_environment(worktree, monkeypatch):
     )
     assert "/var/run/docker.sock" not in rendered
     assert command[-4:] == ["python", "test-image", "-c", "print(1)"]
+
+
+def test_worker_auth_file_mount_is_worker_only(worktree, monkeypatch, tmp_path):
+    import engineer.container as container
+
+    auth_file = tmp_path / "worker-key"
+    auth_file.write_text("secret-value")
+    auth_file.chmod(0o600)
+    runtime = ContainerRuntime("test-image", worktree.parent / "repo/.git")
+    commands = []
+
+    def fake_run(command, **kwargs):
+        if command[0] == "git":
+            return subprocess.CompletedProcess(command, 0, "sha1\n", "")
+        if command[:3] == ["docker", "rm", "-f"]:
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        pytest.fail(f"Unexpected command: {command}")
+
+    class Process:
+        stdout = BytesIO(b"")
+        stderr = BytesIO(b"")
+
+        def wait(self, timeout):
+            return 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(container.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        container.subprocess, "Popen", lambda command, **_: commands.append(command) or Process()
+    )
+    ContainerWorker(runtime, ("claude-worker", "-p"), auth_file=auth_file).execute(
+        "task", worktree, "worker-auth"
+    )
+    ContainerCheckRunner(runtime).execute(["python", "--version"], worktree, "check", 5)
+    worker_command, check_command = commands
+    mount = f"type=bind,source={auth_file},target=/run/secrets/worker-auth,readonly"
+    assert mount in worker_command
+    assert mount not in check_command
+    assert "secret-value" not in " ".join(worker_command)
+
+
+def test_worker_auth_file_rejects_symlink(worktree, tmp_path):
+    key = tmp_path / "key"
+    key.write_text("secret")
+    link = tmp_path / "link"
+    link.symlink_to(key)
+    runtime = ContainerRuntime("test-image", worktree.parent / "repo/.git")
+    with pytest.raises(ValueError, match="regular file"):
+        runtime.run(["claude-worker", "task"], worktree, "run-1", 5, 100, auth_file=link)
+
+
+def test_worker_auth_file_rejects_open_permissions(worktree, tmp_path):
+    key = tmp_path / "key"
+    key.write_text("secret")
+    key.chmod(0o644)
+    runtime = ContainerRuntime("test-image", worktree.parent / "repo/.git")
+    with pytest.raises(ValueError, match="private"):
+        runtime.run(["claude-worker", "task"], worktree, "run-1", 5, 100, auth_file=key)
+
+
+@pytest.mark.skipif(
+    not os.getenv("ENGINEER_CLAUDE_TEST_IMAGE"), reason="No local Claude worker image configured"
+)
+def test_claude_image_auth_mount_and_version(worktree, tmp_path):
+    key = tmp_path / "api-key"
+    key.write_text("probe-only-placeholder\n")
+    key.chmod(0o600)
+    runtime = ContainerRuntime(
+        os.environ["ENGINEER_CLAUDE_TEST_IMAGE"], worktree.parent / "repo/.git"
+    ).resolve_image()
+    result = runtime.run(
+        ["claude-worker", "--version"], worktree, "claude-version", 15, 1000, auth_file=key
+    )
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip() == "2.1.319 (Claude Code)"
+    assert "probe-only-placeholder" not in result.stdout + result.stderr
+    missing = runtime.run(["claude-worker", "--version"], worktree, "claude-no-key", 15, 1000)
+    assert missing.exit_code == 64
 
 
 def test_git_metadata_mount_does_not_follow_worktree_pointer(worktree):

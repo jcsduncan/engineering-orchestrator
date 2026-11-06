@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import threading
@@ -39,6 +40,17 @@ def _mount(path: Path, *, target: Path | None = None, readonly: bool = False) ->
         raise ValueError("Container mount path contains an unsupported character")
     mode = ",readonly" if readonly else ""
     return f"type=bind,source={source},target={destination}{mode}"
+
+
+def validate_worker_auth_file(path: Path) -> Path:
+    """Resolve a private regular file before exposing it to a worker container."""
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Worker auth file must be a regular file, not a symlink")
+    resolved = path.resolve(strict=True)
+    metadata = resolved.stat()
+    if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise ValueError("Worker auth file must be owned by the runner and private")
+    return resolved
 
 
 @dataclass(frozen=True)
@@ -88,6 +100,7 @@ class ContainerRuntime:
         safe_config: Path,
         worktree_configs: tuple[Path, ...] = (),
         readonly_worktree: bool = False,
+        auth_file: Path | None = None,
     ) -> list[str]:
         if not argv or not argv[0]:
             raise ValueError("Container command is required")
@@ -135,6 +148,13 @@ class ContainerRuntime:
         ]
         for config in worktree_configs:
             command.extend(["--mount", _mount(safe_config, target=config, readonly=True)])
+        if auth_file is not None:
+            command.extend(
+                [
+                    "--mount",
+                    _mount(auth_file, target=Path("/run/secrets/worker-auth"), readonly=True),
+                ]
+            )
         command.extend(
             [
                 "--workdir",
@@ -163,6 +183,7 @@ class ContainerRuntime:
         output_limit: int,
         *,
         readonly_worktree: bool = False,
+        auth_file: Path | None = None,
     ) -> ContainerResult:
         if type(timeout) is not int or timeout <= 0:
             raise ValueError("Container timeout must be a positive integer")
@@ -170,6 +191,8 @@ class ContainerRuntime:
             raise ValueError("Container output limit must be a positive integer")
         if self.cancel_reason is not None and (reason := self.cancel_reason(run_id)):
             raise RunCancelled(reason)
+        if auth_file is not None:
+            auth_file = validate_worker_auth_file(auth_file)
         name = f"engineer-{run_id}-{uuid.uuid4().hex[:8]}"
         with tempfile.TemporaryDirectory(prefix="engineer-git-config-") as directory:
             safe_config = Path(directory) / "config"
@@ -202,6 +225,7 @@ class ContainerRuntime:
                 safe_config,
                 worktree_configs,
                 readonly_worktree,
+                auth_file,
             )
             return self._invoke(command, name, run_id, timeout, output_limit)
 
@@ -294,6 +318,7 @@ class ContainerWorker:
     runtime: ContainerRuntime
     command: tuple[str, ...]
     timeout: int = 1800
+    auth_file: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.command or any(not part for part in self.command):
@@ -315,11 +340,19 @@ class ContainerWorker:
                 "memory_mb": self.runtime.memory_mb,
                 "pids": self.runtime.pids,
                 "network": self.runtime.network,
+                "worker_auth_file": self.auth_file is not None,
             },
         )
 
     def execute(self, prompt: str, worktree: Path, run_id: str) -> WorkerResult:
-        result = self.runtime.run([*self.command, prompt], worktree, run_id, self.timeout, 50000)
+        result = self.runtime.run(
+            [*self.command, prompt],
+            worktree,
+            run_id,
+            self.timeout,
+            50000,
+            auth_file=self.auth_file,
+        )
         return WorkerResult(result.exit_code, result.stdout, result.stderr)
 
 

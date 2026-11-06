@@ -1,0 +1,28 @@
+{
+  "runtime": "claude-code",
+  "version": "2.1.319",
+  "image_id": "sha256:ac6aa0770fd19656d38dd7256cdcb72738a40d145fda9c8e934867c9d988e679",
+  "host": "linux/amd64",
+  "invocation": ["claude-worker", "PROMPT"],
+  "container_probes": {
+    "version": {"exit_code": 0, "output": "2.1.319 (Claude Code)"},
+    "missing_auth": {"exit_code": 64},
+    "timeout": {"deadline_seconds": 1, "exit_code": null, "reported": true},
+    "cancellation": {"result": "RunCancelled"},
+    "output_limit": {"generated_bytes": 10000, "retained_bytes": 128},
+    "limits": {
+      "cpus": 1,
+      "cgroup_cpu_max": "100000 100000",
+      "memory_mb": 256,
+      "cgroup_memory_max": "268435456",
+      "pids": 64,
+      "cgroup_pids_max": "64"
+    }
+  },
+  "authenticated_probes": {
+    "single_agent": "not_run",
+    "subagents": "not_run",
+    "tool_permissions": "not_run"
+  },
+  "agent_teams": "unsupported_in_headless_mode"
+}

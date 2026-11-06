@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .capabilities import WorkerProfile, require_mode, verify_worker_image
+from .container import validate_worker_auth_file
 from .core import run_task
 from .intake import IssueClaimStore, RepositoryConfig, TaskSnapshot
 from .providers import OpenAICompatiblePlanner
@@ -87,6 +88,7 @@ class ControllerSettings:
     container_network: str = "none"
     worker_mode: str = "single"
     worker_profile: WorkerProfile | None = None
+    worker_auth_file: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.state_dir.is_absolute():
@@ -106,6 +108,8 @@ class ControllerSettings:
         require_mode(self.worker_mode, self.worker_profile)
         if self.worker_profile is not None:
             self.worker_profile.require_command(self.worker)
+        if self.worker_auth_file is not None and not self.worker_auth_file.is_absolute():
+            raise ValueError("worker_auth_file must be absolute")
         if any(
             type(value) is not int or value <= 0
             for value in (
@@ -174,6 +178,9 @@ def load_settings(path: Path) -> ControllerSettings:
             WorkerProfile.from_dict(payload["worker_profile"])
             if "worker_profile" in payload
             else None
+        ),
+        worker_auth_file=(
+            Path(payload["worker_auth_file"]) if payload.get("worker_auth_file") else None
         ),
         max_running=payload.get("max_running", 2),
         max_per_repository=payload.get("max_per_repository", 1),
@@ -295,6 +302,8 @@ def run_pass(
     verify_checkouts(settings)
     if settings.worker_profile is not None:
         verify_worker_image(settings.image, settings.worker_profile)
+    if settings.worker_auth_file is not None:
+        validate_worker_auth_file(settings.worker_auth_file)
     database = settings.state_dir / "runs.sqlite3"
     queue = RunQueue(
         database,
@@ -365,6 +374,7 @@ def run_pass(
                 external_cancel_reason=cancelled,
                 worker_mode=settings.worker_mode,
                 worker_profile=settings.worker_profile,
+                worker_auth_file=settings.worker_auth_file,
             )
             run_status = result.get("status")
             if run_status not in RUN_OUTCOMES:
