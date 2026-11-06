@@ -36,6 +36,14 @@ def test_manifest_rejects_duplicate_cases(tmp_path: Path) -> None:
         load_cases(manifest)
 
 
+def test_fixture_rejects_symlinks(tmp_path: Path) -> None:
+    source = tmp_path / "fixture"
+    source.mkdir()
+    (source / "outside").symlink_to(tmp_path)
+    with pytest.raises(ValueError, match="symlinks"):
+        _fixture_repo(source, tmp_path / "repo")
+
+
 def test_score_distinguishes_inconclusive_from_failure() -> None:
     case = {"mode": "investigation", "required_findings": ["cache.py", "cache"]}
     report = {
