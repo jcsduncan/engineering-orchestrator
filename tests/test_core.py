@@ -216,6 +216,36 @@ def test_injected_providers_execute_independently(tmp_path):
     assert result["providers"]["worker"]["name"] == "test-worker"
 
 
+def test_unsupported_untracked_entry_preserves_worker_result(tmp_path):
+    class Planner:
+        info = ProviderInfo("test", {})
+
+        def plan(self, _task):
+            return Plan("Task", [], [], [])
+
+    class Worker:
+        info = ProviderInfo("test", {})
+
+        def execute(self, _prompt, worktree, _run_id):
+            subprocess.run(["git", "init", "-q", str(worktree / "nested")], check=True)
+            return WorkerResult(0, "nested repository created", "")
+
+    result = execute_task(
+        task="task",
+        repo=make_repo(tmp_path),
+        planner=Planner(),
+        worker=Worker(),
+        checks=[f"{sys.executable} -c 'print(1)'"],
+        state_dir=tmp_path / "state",
+    )
+
+    assert result["status"] == "needs_review"
+    assert result["worker"]["stdout"] == "nested repository created"
+    assert result["validation"]["status"] == "invalidated"
+    assert result["checks"] == []
+    assert result["changed_files"]
+
+
 def test_invalid_planning_provider_output_is_rejected(tmp_path):
     class Planner:
         info = ProviderInfo("broken", {})

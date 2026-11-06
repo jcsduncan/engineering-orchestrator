@@ -26,9 +26,14 @@ class CheckResult(TypedDict):
 @dataclass(frozen=True)
 class ValidationEvidence:
     checks: list[CheckResult]
-    diff_sha256_before: str
-    diff_sha256_after: str
+    diff_sha256_before: str | None
+    diff_sha256_after: str | None
     status: str
+    reason: str | None = None
+
+
+class UnsupportedDiffEntry(ValueError):
+    """An untracked entry cannot be represented by the diff hash."""
 
 
 def _git_bytes(repo: Path, *args: str) -> bytes:
@@ -62,14 +67,17 @@ def diff_sha256(worktree: Path) -> str:
                 while chunk := source.read(1024 * 1024):
                     _update_chunk(digest, chunk)
         else:
-            raise ValueError(f"Unsupported untracked file type: {raw_path!r}")
+            raise UnsupportedDiffEntry(f"Unsupported untracked entry: {raw_path!r}")
     return digest.hexdigest()
 
 
 def validate_worktree(worktree: Path, checks: list[str], timeout: int) -> ValidationEvidence:
     """Run checks in order and bind their results to the final worktree diff."""
     results = []
-    before = diff_sha256(worktree)
+    try:
+        before = diff_sha256(worktree)
+    except UnsupportedDiffEntry as exc:
+        return ValidationEvidence(results, None, None, "invalidated", str(exc))
     for check in checks:
         argv = shlex.split(check)
         if not argv:
@@ -83,6 +91,7 @@ def validate_worktree(worktree: Path, checks: list[str], timeout: int) -> Valida
                 cwd=worktree,
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=timeout,
             )
             exit_code = completed.returncode
@@ -113,7 +122,10 @@ def validate_worktree(worktree: Path, checks: list[str], timeout: int) -> Valida
         )
         if status != "passed":
             break
-    after = diff_sha256(worktree)
+    try:
+        after = diff_sha256(worktree)
+    except UnsupportedDiffEntry as exc:
+        return ValidationEvidence(results, before, None, "invalidated", str(exc))
     if before != after:
         status = "invalidated"
     elif not results:

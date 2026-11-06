@@ -175,6 +175,7 @@ def execute_task(
                 "diff_sha256_before": validation.diff_sha256_before,
                 "diff_sha256_after": validation.diff_sha256_after,
                 "status": validation.status,
+                "reason": validation.reason,
             },
             "changed_files": diff.splitlines(),
         }

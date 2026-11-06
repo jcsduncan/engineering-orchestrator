@@ -96,3 +96,37 @@ def test_no_checks_is_not_validated(repo):
     assert evidence.status == "not_run"
     assert evidence.checks == []
     assert evidence.diff_sha256_before == evidence.diff_sha256_after
+
+
+def test_invalid_text_bytes_keep_check_result(repo):
+    command = python_command("import sys; sys.stdout.buffer.write(bytes([255]))")
+    evidence = validate_worktree(repo, [command], 10)
+
+    assert evidence.status == "passed"
+    assert evidence.checks[0]["exit_code"] == 0
+    assert evidence.checks[0]["stdout"] == "\ufffd"
+
+
+def test_nested_repository_before_checks_invalidates_without_running_them(repo):
+    nested = repo / "nested"
+    subprocess.run(["git", "init", "-q", str(nested)], check=True)
+    evidence = validate_worktree(
+        repo,
+        [python_command("from pathlib import Path; Path('unexpected.txt').write_text('bad')")],
+        10,
+    )
+
+    assert evidence.status == "invalidated"
+    assert evidence.diff_sha256_before is None
+    assert evidence.checks == []
+    assert "nested/" in evidence.reason
+    assert not (repo / "unexpected.txt").exists()
+
+
+def test_nested_repository_created_by_check_invalidates_after_checks(repo):
+    evidence = validate_worktree(repo, ["git init -q nested"], 10)
+
+    assert evidence.status == "invalidated"
+    assert evidence.checks[0]["status"] == "passed"
+    assert evidence.diff_sha256_before is not None
+    assert evidence.diff_sha256_after is None
