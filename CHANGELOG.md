@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/jcsduncan/engineering-orchestrator/compare/engineering-orchestrator-v0.2.0...engineering-orchestrator-v0.3.0) (2026-11-06)
+
+
+### Features
+
+* declare worker runtime capabilities ([d76a9cc](https://github.com/jcsduncan/engineering-orchestrator/commit/d76a9cc05c6c3941e8b8c026a783c411721cebec))
+
 ## [0.2.0](https://github.com/jcsduncan/engineering-orchestrator/compare/engineering-orchestrator-v0.1.1...engineering-orchestrator-v0.2.0) (2026-11-06)
 
 
