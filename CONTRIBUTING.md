@@ -8,7 +8,7 @@ Add tests for behavior changes and failure paths. Use the PR template to state t
 
 Use Conventional Commit subjects for PR titles, such as `fix: reject invalid tasks` or `feat: add issue intake`. CI checks PR titles. Main accepts squash merges only. Before merging, edit GitHub's proposed squash commit title to a plain imperative summary, such as `Reject invalid tasks`. GitHub cannot remove the PR title prefix automatically.
 
-For a change that needs a release, add a commit override to the PR description using the same Conventional Commit subject as the PR title:
+For a change that needs a release, add a commit override to the PR description. Use the PR title's subject if its type is `feat` or `fix`; otherwise choose a release-triggering subject that accurately describes the change:
 
 ```text
 BEGIN_COMMIT_OVERRIDE
@@ -16,4 +16,4 @@ feat: add issue intake
 END_COMMIT_OVERRIDE
 ```
 
-Release Please reads this from the merged PR. `chore:` changes do not trigger a release.
+Release Please reads this from the merged PR. Put any `BREAKING CHANGE:` footer inside the override. `chore:` changes do not trigger a release.
