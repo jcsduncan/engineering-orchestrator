@@ -36,6 +36,7 @@ Review a validated change with `uv run --locked engineer review RUN_ID --model L
 
 - [System design](docs/HLD.md)
 - [Runtime and configuration](docs/runtime.md)
+- [Benchmarks](docs/benchmarks.md)
 - [Architecture decisions](docs/adr/README.md)
 - [Repository tooling](docs/tooling.md)
 

@@ -6,7 +6,7 @@
       "fixture": "negative_totals",
       "mode": "implementation",
       "task": "Fix total() so refunds (negative amounts) reduce the total. Preserve empty-list and positive-only behavior. Add a regression test.",
-      "checks": ["python -m unittest discover -s . -p 'test_*.py'"],
+      "checks": ["python -B -m unittest discover -s . -p 'test_*.py'"],
       "oracle": ["python", "-B", "-c", "from ledger import total; assert total([8, -3, 2]) == 7; assert total([]) == 0; assert total([2, 3]) == 5"]
     },
     {

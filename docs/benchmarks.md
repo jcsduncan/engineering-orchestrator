@@ -24,3 +24,12 @@ uv run --locked engineer-bench-measure /tmp/engineer-benchmark-1 \
 This writes `measured_summary.json`. Omitted values remain `null` rather than being treated as zero. Latency measures controller execution and excludes the implementation oracle. Compare scores only for runs with the same manifest, fixture digests, and image IDs.
 
 Implementation correctness requires a reviewable change and a passing oracle. Investigation correctness checks a reviewable evidenced report for the fixture's required terms. This lexical check is a small regression signal; a human must still assess the factual claim. An inconclusive investigation has its own outcome and is never counted as a failed implementation.
+
+Review the saved implementation candidates with a separately selected local model:
+
+```sh
+uv run --locked engineer-bench-review /tmp/engineer-benchmark-1 \
+  --model YOUR_LOCAL_REVIEW_MODEL
+```
+
+The command saves `review.json` for each reviewable implementation case and `review_summary.json` for the suite. It leaves the raw `result.json` and `summary.json` untouched. The impact proxy compares accepting every reviewable candidate with holding candidates that receive a major or critical finding; it counts incorrect candidates flagged and correct candidates flagged against each case's oracle. A finding may be unrelated to the oracle failure, so human adjudication remains necessary. Compare runs with the same manifest, fixtures, and worker image. The suite contains one implementation case, so run it across multiple worker outputs before drawing conclusions about review quality.
