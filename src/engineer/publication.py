@@ -371,20 +371,29 @@ def publish_run(
                 if diff_sha256(worktree, git_dir=git_dir) != validation["diff_sha256_after"]:
                     raise ValueError("Worktree no longer matches validated diff")
                 manifest = _changed_manifest(worktree, git_dir)
-                _git_command(worktree, git_dir, "add", "-A")
-                if _changed_manifest(worktree, git_dir) != manifest:
-                    raise ValueError("Worktree changed while staging publication")
-                _git_command(
-                    worktree,
-                    git_dir,
-                    "-c",
-                    "user.name=Engineering Orchestrator",
-                    "-c",
-                    "user.email=orchestrator@users.noreply.github.com",
-                    "commit",
-                    "-m",
-                    f"{title}\n\nRun-ID: {issue.run_id}",
-                )
+                index = git_dir / "index"
+                original_index = index.read_bytes()
+                try:
+                    _git_command(worktree, git_dir, "add", "-A")
+                    if _changed_manifest(worktree, git_dir) != manifest:
+                        raise ValueError("Worktree changed while staging publication")
+                    _git_command(
+                        worktree,
+                        git_dir,
+                        "-c",
+                        "user.name=Engineering Orchestrator",
+                        "-c",
+                        "user.email=orchestrator@users.noreply.github.com",
+                        "commit",
+                        "-m",
+                        f"{title}\n\nRun-ID: {issue.run_id}",
+                    )
+                except Exception:
+                    if git(worktree, "rev-parse", "HEAD", git_dir=git_dir) == record["base_sha"]:
+                        with tempfile.NamedTemporaryFile(dir=git_dir, delete=False) as saved:
+                            saved.write(original_index)
+                        os.replace(saved.name, index)
+                    raise
                 head = git(worktree, "rev-parse", "HEAD", git_dir=git_dir)
             else:
                 parent = git(worktree, "rev-parse", "HEAD^", git_dir=git_dir)

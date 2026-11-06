@@ -7,10 +7,12 @@ from urllib.error import HTTPError
 
 import pytest
 
+import engineer.publication as publication_module
 from engineer.core import execute_task
 from engineer.intake import IssueClaimStore, TaskSnapshot
 from engineer.providers import Plan, ProviderInfo, WorkerResult
 from engineer.publication import GitHubPublicationRemote, PublicationIssue, publish_run
+from engineer.validation import diff_sha256
 
 
 def make_repo(tmp_path):
@@ -35,12 +37,15 @@ class Planner:
 class Worker:
     info = ProviderInfo("test", {})
 
-    def __init__(self, change=True):
+    def __init__(self, change=True, stage=False):
         self.change = change
+        self.stage = stage
 
     def execute(self, _prompt, worktree, _run_id):
         if self.change:
             (worktree / "README.md").write_text("after\n")
+            if self.stage:
+                subprocess.run(["git", "-C", str(worktree), "add", "README.md"], check=True)
         return WorkerResult(0, "Done", "")
 
 
@@ -103,14 +108,14 @@ class FakeRemote:
         ).stdout.strip()
 
 
-def make_run(tmp_path, *, change=True, checks=True):
+def make_run(tmp_path, *, change=True, checks=True, stage=False):
     repo = make_repo(tmp_path)
     state_dir = tmp_path / "state"
     result = execute_task(
         task="Update README",
         repo=repo,
         planner=Planner(),
-        worker=Worker(change),
+        worker=Worker(change, stage),
         checks=[f"{sys.executable} -c 'print(1)'"] if checks else [],
         state_dir=state_dir,
         run_id="publication-1",
@@ -215,6 +220,36 @@ def test_retry_after_push_timeout_reuses_local_commit(tmp_path):
     assert publication.pull_number == 12
     assert remote.pushes == 2
     assert remote.creates == 1
+
+
+@pytest.mark.parametrize("stage", [False, True])
+def test_retry_after_failed_commit_preserves_validated_index(tmp_path, monkeypatch, stage):
+    result, issue, state_dir = make_run(tmp_path, stage=stage)
+    worktree = result["worktree"]
+    validated_diff = diff_sha256(worktree)
+    original_command = publication_module._git_command
+
+    def fail_commit(worktree, git_dir, *args):
+        if "commit" in args:
+            raise OSError("commit failed")
+        return original_command(worktree, git_dir, *args)
+
+    monkeypatch.setattr(publication_module, "_git_command", fail_commit)
+    remote = FakeRemote()
+    with pytest.raises(OSError, match="commit failed"):
+        publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    assert diff_sha256(worktree) == validated_diff
+    cached_diff = subprocess.run(
+        ["git", "-C", worktree, "diff", "--cached", "--quiet"], check=False
+    )
+    assert (cached_diff.returncode == 1) is stage
+    monkeypatch.setattr(publication_module, "_git_command", original_command)
+    assert (
+        publish_run(
+            state_dir=state_dir, issue=issue, title="feat: update README", remote=remote
+        ).pull_number
+        == 12
+    )
 
 
 def test_retry_rejects_embedded_run_marker_without_footer(tmp_path):
