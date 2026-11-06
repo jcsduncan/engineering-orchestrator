@@ -10,6 +10,9 @@
 | Dependabot | Weekly uv, Actions, and Docker updates; Actions updates are grouped. PR titles use Conventional Commit prefixes. Only Python development dependency patch updates auto-merge after required checks pass. | None |
 | Codecov | CI uploads coverage using GitHub OIDC. | Connect this repository to Codecov. |
 | OpenSSF Scorecard | Weekly and main-branch scans publish SARIF. | None |
+| Actionlint and Zizmor | CI rejects invalid Actions workflows; Zizmor reports workflow security findings in code scanning. | None |
+| Gitleaks | PR, main, and weekly runs scan full Git history for secrets with redacted output. | None |
+| Trivy | PR, main, and weekly runs scan the built image and repository dependencies for high and critical vulnerabilities; findings appear in code scanning. | None |
 | Release Please | A releasable change on main opens or updates a release PR. A repository-scoped GitHub App token lets CI run without manual approval and enables squash auto-merge after required checks; the merge publishes the GitHub release and GHCR image. | Install a GitHub App with Contents and Pull requests write access to this repository. Set `RELEASE_APP_CLIENT_ID` as a repository variable and `RELEASE_APP_PRIVATE_KEY` as a repository secret. Until configured, release PRs remain manual. |
 | MkDocs | CI builds docs; GitHub Pages publishes them. | Pages source must be GitHub Actions. |
 | GHCR | A release publishes the CLI image to `ghcr.io/jcsduncan/engineering-orchestrator`. | Image visibility is managed in GHCR. |
