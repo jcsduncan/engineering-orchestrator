@@ -21,3 +21,9 @@ The repository must be clean. The controller pins `HEAD`, creates `agent/<run-id
 SQLite stores the task, base SHA, branch, worktree, plan, status, and result. Worker output is limited to the last 50,000 characters per stream; check output to the last 20,000. `ready_for_review` means the worker exited successfully, all supplied checks passed, and the worktree has changes. With no `--check`, this status does not imply tests ran. `needs_review` covers other completed runs. `failed` records controller exceptions.
 
 The CLI invokes the worker on the host. Worktrees separate files but do not isolate processes, network access, or credentials. The CLI does not publish changes or create pull requests.
+
+## Providers
+
+`PlanningProvider` and `WorkerProvider` define the programmatic interfaces. `OpenAICompatiblePlanner` keeps planning on the configured model endpoint; `CommandWorker` runs the selected CLI. `execute_task` accepts other implementations independently of the CLI defaults.
+
+Each run records provider names and a sanitized configuration summary in `providers_json` and its result. The planner record includes model, endpoint origin, and timeout. The worker record includes executable name, command hash, and timeout. Existing SQLite run databases gain the new column on use.

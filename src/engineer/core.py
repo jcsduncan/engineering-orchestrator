@@ -1,23 +1,26 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import sqlite3
 import subprocess
 import time
-import urllib.request
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 
+from .providers import (
+    CommandWorker,
+    OpenAICompatiblePlanner,
+    Plan,
+    PlanningProvider,
+    ProviderInfo,
+    WorkerProvider,
+    WorkerResult,
+    plan_task,
+)
 
-@dataclass(frozen=True)
-class Plan:
-    objective: str
-    steps: list[str]
-    checks: list[str]
-    risks: list[str]
+__all__ = ["Plan", "plan_task", "run_task", "execute_task"]
 
 
 def git(repo: Path, *args: str) -> str:
@@ -25,43 +28,6 @@ def git(repo: Path, *args: str) -> str:
         ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
     )
     return result.stdout.strip()
-
-
-def plan_task(task: str, model: str, base_url: str, timeout: int = 120) -> Plan:
-    """Ask a local OpenAI-compatible server for a bounded, structured plan."""
-    body = {
-        "model": model,
-        "temperature": 0,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are an engineering task controller. Return only a JSON object with "
-                    "objective (string), steps (array of strings), checks (array of strings), "
-                    "and risks (array of strings). Keep each array to at most five items. "
-                    "Do not claim to have inspected code. State uncertainty honestly."
-                ),
-            },
-            {"role": "user", "content": task},
-        ],
-    }
-    req = urllib.request.Request(
-        base_url.rstrip("/") + "/chat/completions",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        payload = json.load(response)
-    raw = payload["choices"][0]["message"]["content"].strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    data = json.loads(raw)
-    if not isinstance(data.get("objective"), str) or not data["objective"].strip():
-        raise ValueError("Planner response has no objective")
-    for key in ("steps", "checks", "risks"):
-        if not isinstance(data.get(key), list) or any(not isinstance(x, str) for x in data[key]):
-            raise ValueError(f"Planner response has invalid {key}")
-    return Plan(data["objective"], data["steps"][:5], data["checks"][:5], data["risks"][:5])
 
 
 def _database(path: Path) -> sqlite3.Connection:
@@ -72,9 +38,12 @@ def _database(path: Path) -> sqlite3.Connection:
             id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, repo TEXT NOT NULL,
             base_sha TEXT NOT NULL, branch TEXT NOT NULL, worktree TEXT NOT NULL,
             status TEXT NOT NULL, task TEXT NOT NULL, plan_json TEXT NOT NULL,
-            result_json TEXT
+            result_json TEXT, providers_json TEXT NOT NULL DEFAULT '{}'
         )"""
     )
+    columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
+    if "providers_json" not in columns:
+        db.execute("ALTER TABLE runs ADD COLUMN providers_json TEXT NOT NULL DEFAULT '{}'")
     db.commit()
     return db
 
@@ -99,14 +68,52 @@ def run_task(
     worker_timeout: int = 1800,
     check_timeout: int = 300,
 ) -> dict:
-    """Execute a task in a clean worktree and record worker and check outcomes."""
-    if not worker:
-        raise ValueError("A coding worker command is required")
+    """Execute a task with the default local planner and command worker."""
+    return execute_task(
+        task=task,
+        repo=repo,
+        planner=OpenAICompatiblePlanner(model, base_url),
+        worker=CommandWorker(tuple(worker), worker_timeout),
+        checks=checks,
+        state_dir=state_dir,
+        check_timeout=check_timeout,
+    )
+
+
+def execute_task(
+    *,
+    task: str,
+    repo: Path,
+    planner: PlanningProvider,
+    worker: WorkerProvider,
+    checks: list[str],
+    state_dir: Path,
+    check_timeout: int = 300,
+) -> dict:
+    """Execute a task with independently selected planner and worker providers."""
     repo = Path(git(repo, "rev-parse", "--show-toplevel"))
     if git(repo, "status", "--porcelain"):
         raise ValueError("Target repository must have a clean worktree")
     base_sha = git(repo, "rev-parse", "HEAD")
-    plan = plan_task(task, model, base_url)
+    plan = planner.plan(task)
+    if (
+        not isinstance(plan, Plan)
+        or not isinstance(plan.objective, str)
+        or not plan.objective.strip()
+        or any(
+            not isinstance(items, list) or any(not isinstance(item, str) for item in items)
+            for items in (plan.steps, plan.checks, plan.risks)
+        )
+    ):
+        raise ValueError("Planning provider returned an invalid Plan")
+    planner_info, worker_info = planner.info, worker.info
+    if not isinstance(planner_info, ProviderInfo) or not isinstance(worker_info, ProviderInfo):
+        raise ValueError("Provider returned invalid ProviderInfo")
+    try:
+        providers = {"planner": asdict(planner_info), "worker": asdict(worker_info)}
+        providers_json = json.dumps(providers)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Provider metadata is not JSON-serializable") from exc
     run_id = uuid.uuid4().hex[:12]
     branch = f"agent/{run_id}"
     worktree = state_dir / "worktrees" / run_id
@@ -115,7 +122,10 @@ def run_task(
     try:
         git(repo, "worktree", "add", "-b", branch, str(worktree), base_sha)
         db.execute(
-            "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            """INSERT INTO runs
+            (id, created_at, repo, base_sha, branch, worktree, status, task,
+             plan_json, result_json, providers_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 run_id,
                 int(time.time()),
@@ -127,6 +137,7 @@ def run_task(
                 task,
                 json.dumps(asdict(plan)),
                 None,
+                providers_json,
             ),
         )
         db.commit()
@@ -137,24 +148,15 @@ def run_task(
             "solution is uncertain, report that clearly; do not invent a fix. "
             "Do not commit, push, or open a pull request."
         )
-        # The last argument is the prompt. An adapter can translate this contract for any CLI.
-        try:
-            completed = subprocess.run(
-                [*worker, prompt],
-                check=False,
-                cwd=worktree,
-                capture_output=True,
-                text=True,
-                timeout=worker_timeout,
-                env={**os.environ, "ENGINEER_RUN_ID": run_id},
-            )
-            worker_result = {
-                "exit_code": completed.returncode,
-                "stdout": completed.stdout[-50000:],
-                "stderr": completed.stderr[-50000:],
-            }
-        except subprocess.TimeoutExpired as exc:
-            worker_result = {"exit_code": None, "stdout": "", "stderr": str(exc)}
+        outcome = worker.execute(prompt, worktree, run_id)
+        if (
+            not isinstance(outcome, WorkerResult)
+            or (outcome.exit_code is not None and type(outcome.exit_code) is not int)
+            or not isinstance(outcome.stdout, str)
+            or not isinstance(outcome.stderr, str)
+        ):
+            raise ValueError("Worker provider returned an invalid WorkerResult")
+        worker_result = asdict(outcome)
         check_results = []
         if worker_result["exit_code"] == 0:
             for check in checks:
@@ -193,6 +195,7 @@ def run_task(
             "worktree": str(worktree),
             "base_sha": base_sha,
             "plan": asdict(plan),
+            "providers": providers,
             "worker": worker_result,
             "checks": check_results,
             "changed_files": diff.splitlines(),

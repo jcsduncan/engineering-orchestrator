@@ -29,6 +29,8 @@ flowchart LR
 | Validation | Runs explicit checks and records results against the final diff. |
 | Review artifact | Presents a pull request or investigation report with findings, checks, and uncertainty. |
 
+Planner and worker providers expose independent typed contracts. The controller records their identities and sanitized configuration summaries with each run.
+
 ## GitHub issue intake
 
 An installed GitHub App observes only configured repositories. An open issue with the `agent:run` label is eligible; opening or editing an unlabelled issue does not start work. Webhook events prompt intake, and a periodic scan reconciles eligible issues after missed or out-of-order deliveries. Both paths use the same claim operation. Without a reachable HTTPS webhook endpoint, the scan is the sole trigger.
