@@ -71,6 +71,10 @@ Human review controls merge. Automated review may find defects but cannot replac
 
 For a validated implementation run, the controller rechecks the diff identity before committing the run branch. It publishes with a GitHub App token limited to the claimed repository, then finds or creates one PR for the run ID. The PR links the issue and states the base SHA, validated diff identity, checks, risks, and unverified work. Investigation outcomes are not published as code changes.
 
+## Evaluation
+
+The [benchmark suite](benchmarks.md) runs bounded tasks against versioned fixture repositories. It retains the fixture digest, base commit, complete run evidence, an implementation oracle or investigation rubric, and measured latency. Intervention and cost are recorded when supplied; missing measurements stay unknown. Inconclusive reports are counted separately from failures.
+
 ## Trust boundary
 
 Task text, repository files, and model output are untrusted inputs. Code execution runs with bounded resources and without publication credentials. The controller uses a separate, scoped identity for repository writes. Execution and publication are distinct operations.
