@@ -69,6 +69,7 @@ class Reviewer:
                 {
                     "severity": "major",
                     "file": "README.md",
+                    "side": "new",
                     "line": 1,
                     "issue": "The change omits a required behavior",
                     "evidence": "The added first line only says after",
@@ -125,9 +126,38 @@ def test_cached_review_rejects_later_worktree_change(tmp_path):
 @pytest.mark.parametrize(
     "finding",
     [
-        {"severity": "major", "file": "outside.py", "line": 1, "issue": "x", "evidence": "y"},
-        {"severity": "major", "file": "README.md", "line": 0, "issue": "x", "evidence": "y"},
-        {"severity": "unknown", "file": "README.md", "line": 1, "issue": "x", "evidence": "y"},
+        {
+            "severity": "major",
+            "file": "outside.py",
+            "side": "new",
+            "line": 1,
+            "issue": "x",
+            "evidence": "y",
+        },
+        {
+            "severity": "major",
+            "file": "README.md",
+            "side": "new",
+            "line": 0,
+            "issue": "x",
+            "evidence": "y",
+        },
+        {
+            "severity": "major",
+            "file": "README.md",
+            "side": "new",
+            "line": 99999,
+            "issue": "x",
+            "evidence": "y",
+        },
+        {
+            "severity": "unknown",
+            "file": "README.md",
+            "side": "new",
+            "line": 1,
+            "issue": "x",
+            "evidence": "y",
+        },
     ],
 )
 def test_invalid_finding_is_recorded_as_review_error_without_changing_run(tmp_path, finding):
@@ -204,3 +234,30 @@ def test_openai_reviewer_sends_only_evidence_without_tools(monkeypatch, tmp_path
     assert "worktree" not in context
     assert context["checks"][0]["status"] == "passed"
     assert captured["timeout"] == 120
+
+
+def test_reviewer_timeout_is_advisory_and_does_not_expose_endpoint(monkeypatch, tmp_path):
+    state_dir, _ = make_ready(tmp_path)
+
+    def timed_out(_request, timeout):
+        assert timeout == 120
+        raise TimeoutError("private endpoint token")
+
+    monkeypatch.setattr("engineer.review.urllib.request.urlopen", timed_out)
+    reviewer = OpenAICompatibleReviewer("review-model", "http://127.0.0.1:11434/v1")
+    result = review_run(state_dir, "review-me", reviewer)
+    assert result["status"] == "error"
+    assert result["error"] == "TimeoutError"
+    assert status_run(state_dir, "review-me")["status"] == "ready_for_review"
+    response = {"choices": [{"message": {"content": '{"findings": []}'}}]}
+    monkeypatch.setattr(
+        "engineer.review.urllib.request.urlopen",
+        lambda _request, timeout: BytesIO(json.dumps(response).encode()),
+    )
+    retry = review_run(
+        state_dir,
+        "review-me",
+        OpenAICompatibleReviewer("other-review-model", "http://127.0.0.1:11434/v1"),
+    )
+    assert retry["status"] == "completed"
+    assert retry["provider"]["configuration"]["model"] == "other-review-model"

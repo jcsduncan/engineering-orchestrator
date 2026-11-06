@@ -12,4 +12,4 @@ Separating review from execution prevents the worker from approving its own chan
 
 ## Consequence
 
-The controller may publish a validated change with review findings or an unavailable review, but must show that distinction. Review quality is measured against benchmark correctness and human adjudication.
+The controller may publish a validated change with review findings or an unavailable review, but must show that distinction. Benchmark correctness provides a decision proxy; humans still adjudicate individual findings.

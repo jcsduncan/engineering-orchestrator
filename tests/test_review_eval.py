@@ -37,7 +37,16 @@ def test_review_impact_compares_bad_acceptance_and_good_false_flags(tmp_path, mo
     def fake_review(state_dir, run_id, reviewer):
         calls.append((state_dir, run_id, reviewer))
         findings = (
-            [{"severity": "major", "file": "README.md", "line": 1, "issue": "bug", "evidence": "x"}]
+            [
+                {
+                    "severity": "major",
+                    "file": "README.md",
+                    "side": "new",
+                    "line": 1,
+                    "issue": "bug",
+                    "evidence": "x",
+                }
+            ]
             if run_id == "bad"
             else []
         )
