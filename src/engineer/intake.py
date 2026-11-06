@@ -143,6 +143,9 @@ class GitHubIssueSource:
             if exc.code in {404, 410}:
                 raise IssueGone(number) from exc
             raise
+        expected_url = f"https://github.com/{repo.owner}/{repo.name}/issues/{number}"
+        if data["html_url"].rstrip("/").casefold() != expected_url.casefold():
+            raise IssueGone(number)
         return Issue(
             number=data["number"],
             title=data["title"],

@@ -337,3 +337,24 @@ def test_github_source_propagates_transient_issue_failure(monkeypatch):
     with pytest.raises(HTTPError) as exc:
         GitHubIssueSource("secret").get_issue(REPO, 7)
     assert exc.value.code == 503
+
+
+def test_github_source_rejects_transferred_issue_response(monkeypatch):
+    def fake_open(request, timeout):
+        return Response(
+            json.dumps(
+                {
+                    "number": 7,
+                    "title": "Moved",
+                    "body": "",
+                    "state": "open",
+                    "labels": [{"name": "agent:run"}],
+                    "html_url": "https://github.com/other/repo/issues/7",
+                    "updated_at": "2026-11-06T12:00:00Z",
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr("engineer.intake.urlopen", fake_open)
+    with pytest.raises(IssueGone):
+        GitHubIssueSource("secret").get_issue(REPO, 7)
