@@ -146,3 +146,17 @@ def test_suite_scores_implementation_oracle(
     assert json.loads((tmp_path / "out/negative_totals/result.json").read_text())["oracle"][
         "passed"
     ]
+
+
+def test_suite_rejects_invalid_intervention_map(tmp_path: Path) -> None:
+    manifest = Path(__file__).parents[1] / "benchmarks/tasks.json"
+    with pytest.raises(ValueError, match="Invalid interventions"):
+        run_suite(
+            manifest=manifest,
+            output_dir=tmp_path / "out",
+            model="model",
+            base_url="http://localhost:11434/v1",
+            worker=["worker"],
+            interventions=[],  # type: ignore[arg-type]
+        )
+    assert not (tmp_path / "out").exists()
