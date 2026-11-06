@@ -1,6 +1,7 @@
 import os
 import shlex
 import subprocess
+import time
 from io import BytesIO
 from pathlib import Path
 
@@ -238,11 +239,22 @@ Path('README.md').write_text('after\\n')
     assert result.exit_code == 0, result.stderr
     assert (worktree / "README.md").read_text() == "after\n"
 
-    timeout = runtime.run(
-        ["python", "-c", "import time; time.sleep(30)"], worktree, "timeout-test", 1, 2000
+    child_script = (
+        "import time; from pathlib import Path; "
+        "Path('child-started').write_text('yes'); "
+        "time.sleep(4); Path('child-escaped').write_text('yes')"
     )
+    parent_script = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {child_script!r}]); "
+        "time.sleep(30)"
+    )
+    timeout = runtime.run(["python", "-c", parent_script], worktree, "timeout-test", 2, 2000)
     assert timeout.exit_code is None
     assert "timed out" in timeout.stderr
+    assert (worktree / "child-started").exists()
+    time.sleep(2.5)
+    assert not (worktree / "child-escaped").exists()
     remaining = subprocess.run(
         [
             "docker",
