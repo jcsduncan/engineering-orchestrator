@@ -70,6 +70,8 @@ def test_claim_is_idempotent_and_snapshot_is_immutable(store):
     assert first.cancelled == []
     assert len(first.claimed) == 1
     claim = first.claimed[0]
+    assert store.get(claim.snapshot.run_id) == claim
+    assert store.get("missing") is None
     assert claim.snapshot.objective == "Fix the cache"
     assert claim.snapshot.acceptance_criteria == "- Add a regression test"
     assert claim.snapshot.body == source.issues[7].body

@@ -211,6 +211,11 @@ class IssueClaimStore:
             TaskSnapshot(**json.loads(row["snapshot_json"])), row["status"], row["reason"]
         )
 
+    def get(self, run_id: str) -> IssueClaim | None:
+        """Look up the immutable issue claim associated with a run ID."""
+        row = self.db.execute("SELECT * FROM issue_claims WHERE run_id = ?", (run_id,)).fetchone()
+        return self._claim(row) if row is not None else None
+
     def active(self, installation_id: int, repository_id: int) -> list[IssueClaim]:
         rows = self.db.execute(
             """SELECT * FROM issue_claims WHERE installation_id = ? AND repository_id = ?

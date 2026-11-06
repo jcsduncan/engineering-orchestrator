@@ -8,6 +8,7 @@ from urllib.error import HTTPError
 import pytest
 
 from engineer.core import execute_task
+from engineer.intake import IssueClaimStore, TaskSnapshot
 from engineer.providers import Plan, ProviderInfo, WorkerResult
 from engineer.publication import GitHubPublicationRemote, PublicationIssue, publish_run
 
@@ -50,6 +51,7 @@ class FakeRemote:
         self.pushes = 0
         self.creates = 0
         self.fail_create_once = False
+        self.fail_push_once = False
 
     def verify_repository(self, issue, base_sha):
         assert issue.repository_id == 42
@@ -77,6 +79,7 @@ class FakeRemote:
         assert "Validated diff SHA-256" in body
         assert "Unknown risk" in body
         assert "Unverified work" in body
+        assert "BEGIN_COMMIT_OVERRIDE\nfeat: update README\nEND_COMMIT_OVERRIDE" in body
         self.pull = {
             "number": 12,
             "html_url": "https://github.com/owner/repo/pull/12",
@@ -89,6 +92,9 @@ class FakeRemote:
 
     def push(self, _issue, worktree, _git_dir, _branch):
         self.pushes += 1
+        if self.fail_push_once:
+            self.fail_push_once = False
+            raise TimeoutError("push timed out")
         self.remote_sha = subprocess.run(
             ["git", "-C", str(worktree), "rev-parse", "HEAD"],
             check=True,
@@ -110,7 +116,31 @@ def make_run(tmp_path, *, change=True, checks=True):
         run_id="publication-1",
     )
     issue = PublicationIssue("publication-1", 7, 42, "owner", "repo", 8, "Update README")
+    claim_issue(state_dir, issue)
     return result, issue, state_dir
+
+
+def claim_issue(state_dir, issue):
+    snapshot = TaskSnapshot(
+        run_id=issue.run_id,
+        installation_id=issue.installation_id,
+        repository_id=issue.repository_id,
+        owner=issue.owner,
+        repository=issue.repository,
+        issue_number=issue.issue_number,
+        generation=1,
+        title=issue.title,
+        body="## Outcome\nUpdate README",
+        objective="Update README",
+        acceptance_criteria="Run checks",
+        issue_url=f"https://github.com/{issue.owner}/{issue.repository}/issues/{issue.issue_number}",
+        issue_updated_at="2026-11-06T12:00:00Z",
+    )
+    claims = IssueClaimStore(state_dir / "runs.sqlite3")
+    try:
+        claims.claim(snapshot)
+    finally:
+        claims.close()
 
 
 def test_publish_validated_run_and_replay(tmp_path):
@@ -173,6 +203,20 @@ def test_retry_after_pr_timeout_reuses_branch_and_commit(tmp_path):
     assert remote.creates == 1
 
 
+def test_retry_after_push_timeout_reuses_local_commit(tmp_path):
+    _, issue, state_dir = make_run(tmp_path)
+    remote = FakeRemote()
+    remote.fail_push_once = True
+    with pytest.raises(TimeoutError, match="push timed out"):
+        publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    publication = publish_run(
+        state_dir=state_dir, issue=issue, title="feat: update README", remote=remote
+    )
+    assert publication.pull_number == 12
+    assert remote.pushes == 2
+    assert remote.creates == 1
+
+
 def test_rejects_remote_branch_with_different_commit(tmp_path):
     _, issue, state_dir = make_run(tmp_path)
     remote = FakeRemote()
@@ -187,8 +231,21 @@ def test_rejects_issue_swap_on_retry(tmp_path):
     remote = FakeRemote()
     publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
     swapped = PublicationIssue("publication-1", 7, 42, "owner", "repo", 9, "Other")
-    with pytest.raises(ValueError, match="Recorded publication does not match run or issue"):
+    with pytest.raises(ValueError, match="Publication issue does not match the stored claim"):
         publish_run(state_dir=state_dir, issue=swapped, title="feat: update README", remote=remote)
+
+
+def test_rejects_cancelled_claim_before_push(tmp_path):
+    _, issue, state_dir = make_run(tmp_path)
+    claims = IssueClaimStore(state_dir / "runs.sqlite3")
+    try:
+        claims.cancel(issue.run_id, "Issue closed")
+    finally:
+        claims.close()
+    remote = FakeRemote()
+    with pytest.raises(ValueError, match="no active or completed issue claim"):
+        publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    assert remote.pushes == 0
 
 
 def test_existing_pr_must_match_run_and_issue(tmp_path):
@@ -258,6 +315,7 @@ def test_rejects_investigation_run(tmp_path):
         mode="investigation",
     )
     issue = PublicationIssue("publication-1", 7, 42, "owner", "repo", 8, "Investigate")
+    claim_issue(state_dir, issue)
     with pytest.raises(ValueError, match="Only validated implementation runs"):
         publish_run(
             state_dir=state_dir, issue=issue, title="feat: update README", remote=FakeRemote()

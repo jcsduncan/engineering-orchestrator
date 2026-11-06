@@ -17,6 +17,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from .core import _acquire_run_lock, _registered_git_dir, git
+from .intake import IssueClaimStore
 from .state import RunStore
 from .validation import diff_sha256
 
@@ -255,7 +256,7 @@ def _changed_manifest(worktree: Path, git_dir: Path) -> str:
     return digest.hexdigest()
 
 
-def _body(issue: PublicationIssue, record: dict) -> str:
+def _body(issue: PublicationIssue, record: dict, title: str) -> str:
     result = record["result"]
     checks = result["checks"]
     check_lines = [
@@ -263,25 +264,26 @@ def _body(issue: PublicationIssue, record: dict) -> str:
         for item in checks
     ]
     risks = result["plan"].get("risks", [])
-    return "\n".join(
-        [
-            f"Closes #{issue.issue_number}",
-            "",
-            "## Run evidence",
-            f"- Run ID: `{issue.run_id}`",
-            f"- Base SHA: `{record['base_sha']}`",
-            f"- Validated diff SHA-256: `{result['validation']['diff_sha256_after']}`",
-            "",
-            "## Checks",
-            *(check_lines or ["- No checks recorded"]),
-            "",
-            "## Risks",
-            *([f"- {json.dumps(risk)}" for risk in risks] or ["- None recorded by the planner"]),
-            "",
-            "## Unverified work",
-            "- No validation beyond the listed commands is claimed.",
-        ]
-    )
+    lines = [
+        f"Closes #{issue.issue_number}",
+        "",
+        "## Run evidence",
+        f"- Run ID: `{issue.run_id}`",
+        f"- Base SHA: `{record['base_sha']}`",
+        f"- Validated diff SHA-256: `{result['validation']['diff_sha256_after']}`",
+        "",
+        "## Checks",
+        *(check_lines or ["- No checks recorded"]),
+        "",
+        "## Risks",
+        *([f"- {json.dumps(risk)}" for risk in risks] or ["- None recorded by the planner"]),
+        "",
+        "## Unverified work",
+        "- No validation beyond the listed commands is claimed.",
+    ]
+    if title.startswith(("feat: ", "fix: ")):
+        lines.extend(["", "BEGIN_COMMIT_OVERRIDE", title, "END_COMMIT_OVERRIDE"])
+    return "\n".join(lines)
 
 
 def _publication_db(store: RunStore) -> None:
@@ -299,17 +301,40 @@ def _publication_db(store: RunStore) -> None:
         )
 
 
+def _verify_claim(state_dir: Path, issue: PublicationIssue) -> None:
+    claims = IssueClaimStore(state_dir / "runs.sqlite3")
+    try:
+        claim = claims.get(issue.run_id)
+    finally:
+        claims.close()
+    if claim is None or claim.status not in {"claimed", "completed"}:
+        raise ValueError("Run has no active or completed issue claim")
+    snapshot = claim.snapshot
+    if (
+        snapshot.installation_id != issue.installation_id
+        or snapshot.repository_id != issue.repository_id
+        or snapshot.owner != issue.owner
+        or snapshot.repository != issue.repository
+        or snapshot.issue_number != issue.issue_number
+        or snapshot.title != issue.title
+    ):
+        raise ValueError("Publication issue does not match the stored claim")
+
+
 def publish_run(
     *, state_dir: Path, issue: PublicationIssue, title: str, remote: PublicationRemote
 ) -> Publication:
     """Publish or recover one validated run without creating a duplicate PR."""
-    if not isinstance(title, str) or not re.fullmatch(
-        r"(?:feat|fix|docs|refactor|perf|test|build|ci|chore): [^\r\n]+", title
+    if (
+        not isinstance(title, str)
+        or len(title) > 200
+        or not re.fullmatch(r"(?:feat|fix|docs|refactor|perf|test|build|ci|chore): [^\r\n]+", title)
     ):
         raise ValueError("Pull request title must use a conventional subject")
     state_dir = state_dir.expanduser().resolve()
     lock = _acquire_run_lock(state_dir, issue.run_id)
     try:
+        _verify_claim(state_dir, issue)
         store = RunStore(state_dir / "runs.sqlite3")
         try:
             _publication_db(store)
@@ -401,7 +426,7 @@ def publish_run(
             if pull is not None:
                 if pull["head"]["sha"] != head:
                     raise ValueError("Existing pull request points to a different commit")
-                pull_body = pull.get("body", "")
+                pull_body = pull.get("body") or ""
                 if (
                     f"Run ID: `{issue.run_id}`" not in pull_body
                     or f"Closes #{issue.issue_number}" not in pull_body
@@ -411,15 +436,17 @@ def publish_run(
                 if pull["state"] == "closed" and not pull.get("merged_at"):
                     raise ValueError("Existing pull request was closed without merging")
             if pull is None or pull["state"] == "open":
+                _verify_claim(state_dir, issue)
                 remote_sha = remote.branch_sha(issue, branch)
                 if remote_sha is None:
                     remote.push(issue, worktree, git_dir, branch)
                 elif remote_sha != head:
                     raise ValueError("Remote run branch points to a different commit")
                 if pull is None:
-                    pull = remote.create_pull(issue, branch, base, title, _body(issue, record))
+                    body = _body(issue, record, title)
+                    pull = remote.create_pull(issue, branch, base, title, body)
             expected_url = f"https://github.com/{issue.owner}/{issue.repository}/pull/"
-            pull_body = pull.get("body", "")
+            pull_body = pull.get("body") or ""
             if (
                 pull["head"]["sha"] != head
                 or pull["base"]["ref"] != base
