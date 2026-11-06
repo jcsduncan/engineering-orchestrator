@@ -9,6 +9,7 @@ from pathlib import Path
 import fire
 
 from .core import cancel_run, plan_task, run_task, status_run
+from .review import OpenAICompatibleReviewer, review_run
 
 
 def _state_dir(value: str | None) -> Path:
@@ -103,6 +104,21 @@ def retry(source_run_id: str, task: str, **options) -> None:
     run(task, retry_of=str(source_run_id), **options)
 
 
+def review(
+    run_id: str,
+    state_dir: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+) -> None:
+    """Ask an independent local model to review a validated change."""
+    selected_model = model or os.getenv("ENGINEER_REVIEW_MODEL") or os.getenv("ENGINEER_MODEL")
+    if not selected_model:
+        raise SystemExit("Set --model, ENGINEER_REVIEW_MODEL, or ENGINEER_MODEL")
+    endpoint = base_url or os.getenv("ENGINEER_BASE_URL", "http://127.0.0.1:11434/v1")
+    reviewer = OpenAICompatibleReviewer(selected_model, endpoint)
+    print(json.dumps(review_run(_state_dir(state_dir), str(run_id), reviewer), indent=2))
+
+
 def main() -> None:
     """Expose the task command without silently dropping repeated validation flags."""
     check_flags = sum(
@@ -111,8 +127,11 @@ def main() -> None:
     )
     if check_flags > 1:
         raise SystemExit('Pass multiple checks as one list: --check=\'["cmd1", "cmd2"]\'')
-    if len(sys.argv) > 1 and sys.argv[1] in {"status", "cancel", "retry"}:
-        fire.Fire({"status": status, "cancel": cancel, "retry": retry}, name="engineer")
+    if len(sys.argv) > 1 and sys.argv[1] in {"status", "cancel", "retry", "review"}:
+        fire.Fire(
+            {"status": status, "cancel": cancel, "retry": retry, "review": review},
+            name="engineer",
+        )
     else:
         fire.Fire(run, name="engineer")
 

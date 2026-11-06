@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 
 from .core import _acquire_run_lock, _registered_git_dir, git
 from .intake import IssueClaimStore
+from .review import _review_table, _stored_review
 from .state import RunStore
 from .validation import diff_sha256
 
@@ -256,7 +257,16 @@ def _changed_manifest(worktree: Path, git_dir: Path) -> str:
     return digest.hexdigest()
 
 
-def _body(issue: PublicationIssue, record: dict, title: str) -> str:
+def _advisory_text(value: str) -> str:
+    """Render untrusted reviewer text without GitHub mentions or Markdown syntax."""
+    unsafe = set("&@#\\`*_{}[]()<>!|")
+    return "".join(
+        f"&#{ord(character)};" if character in unsafe else character
+        for character in json.dumps(value)
+    )
+
+
+def _body(issue: PublicationIssue, record: dict, title: str, review: dict | None) -> str:
     result = record["result"]
     checks = result["checks"]
     check_lines = [
@@ -264,6 +274,19 @@ def _body(issue: PublicationIssue, record: dict, title: str) -> str:
         for item in checks
     ]
     risks = result["plan"].get("risks", [])
+    if review is None:
+        review_lines = ["- Not run"]
+    elif review["status"] != "completed":
+        review_lines = [f"- {review['status']}: {_advisory_text(review['error'])}"]
+    elif not review["findings"]:
+        review_lines = ["- No actionable findings reported"]
+    else:
+        review_lines = [
+            f"- {finding['severity']} {_advisory_text(finding['file'])} "
+            f"({finding['side']} line {finding['line']}): {_advisory_text(finding['issue'])}; "
+            f"evidence: {_advisory_text(finding['evidence'])}"
+            for finding in review["findings"]
+        ]
     lines = [
         f"Closes #{issue.issue_number}",
         "",
@@ -277,6 +300,9 @@ def _body(issue: PublicationIssue, record: dict, title: str) -> str:
         "",
         "## Risks",
         *([f"- {json.dumps(risk)}" for risk in risks] or ["- None recorded by the planner"]),
+        "",
+        "## Automated review (advisory)",
+        *review_lines,
         "",
         "## Unverified work",
         "- No validation beyond the listed commands is claimed.",
@@ -355,6 +381,10 @@ def publish_run(
                 or not result["changed_files"]
             ):
                 raise ValueError("Run has no validated implementation diff")
+            _review_table(store)
+            review = _stored_review(store, issue.run_id)
+            if review is not None and review["diff_sha256"] != validation["diff_sha256_after"]:
+                raise ValueError("Stored review does not match validated diff")
             worktree = Path(record["worktree"])
             repo = Path(record["repo"])
             if git(repo, "rev-parse", "--show-toplevel") != str(repo):
@@ -476,7 +506,7 @@ def publish_run(
                 elif remote_sha != head:
                     raise ValueError("Remote run branch points to a different commit")
                 if pull is None:
-                    body = _body(issue, record, title)
+                    body = _body(issue, record, title, review)
                     pull = remote.create_pull(issue, branch, base, title, body)
             expected_url = f"https://github.com/{issue.owner}/{issue.repository}/pull/"
             pull_body = pull.get("body") or ""

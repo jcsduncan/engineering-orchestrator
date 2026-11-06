@@ -196,6 +196,26 @@ def test_cli_cancel_accepts_literal_evaluated_reason(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["status"] == "cancellation_requested"
 
 
+def test_cli_review_uses_separate_model(monkeypatch, capsys, tmp_path):
+    captured = {}
+
+    def fake_review(state_dir, run_id, reviewer):
+        captured.update(state_dir=state_dir, run_id=run_id, reviewer=reviewer)
+        return {"status": "completed", "findings": []}
+
+    monkeypatch.setattr(cli, "review_run", fake_review)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["engineer", "review", "run-1", "--state-dir", str(tmp_path), "--model", "local-review"],
+    )
+    cli.main()
+    assert captured["state_dir"] == tmp_path
+    assert captured["run_id"] == "run-1"
+    assert captured["reviewer"].model == "local-review"
+    assert json.loads(capsys.readouterr().out) == {"status": "completed", "findings": []}
+
+
 @pytest.mark.parametrize("alias", ["--check", "--c", "-c", "-check"])
 def test_cli_rejects_repeated_check_flags(monkeypatch, alias):
     monkeypatch.setattr(

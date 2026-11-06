@@ -13,6 +13,7 @@ from engineer.core import execute_task
 from engineer.intake import IssueClaimStore, TaskSnapshot
 from engineer.providers import Plan, ProviderInfo, WorkerResult
 from engineer.publication import GitHubPublicationRemote, PublicationIssue, publish_run
+from engineer.review import review_run
 from engineer.validation import diff_sha256
 
 
@@ -85,6 +86,7 @@ class FakeRemote:
         assert "Validated diff SHA-256" in body
         assert "Unknown risk" in body
         assert "Unverified work" in body
+        assert "Automated review (advisory)" in body
         assert "BEGIN_COMMIT_OVERRIDE\nfeat: update README\nEND_COMMIT_OVERRIDE" in body
         self.pull = {
             "number": 12,
@@ -174,6 +176,66 @@ def test_publish_validated_run_and_replay(tmp_path):
         text=True,
     ).stdout
     assert status == ""
+
+
+def test_publication_includes_diff_bound_advisory_findings(tmp_path):
+    result, issue, state_dir = make_run(tmp_path)
+
+    class Reviewer:
+        info = ProviderInfo("fixture-reviewer", {})
+
+        def review(self, _context):
+            return {
+                "findings": [
+                    {
+                        "severity": "major",
+                        "file": "README.md",
+                        "side": "new",
+                        "line": 1,
+                        "issue": "Incorrect result",
+                        "evidence": "The new line says after",
+                    }
+                ]
+            }
+
+    reviewed = review_run(state_dir, issue.run_id, Reviewer())
+    assert reviewed["diff_sha256"] == result["validation"]["diff_sha256_after"]
+    remote = FakeRemote()
+    publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    assert 'major "README.md" (new line 1): "Incorrect result"' in remote.pull["body"]
+    assert "The new line says after" in remote.pull["body"]
+
+
+def test_publication_quotes_untrusted_review_fields(tmp_path):
+    _, issue, state_dir = make_run(tmp_path)
+
+    class Reviewer:
+        info = ProviderInfo("fixture-reviewer", {})
+
+        def review(self, _context):
+            return {
+                "findings": [
+                    {
+                        "severity": "major",
+                        "file": "README.md",
+                        "side": "new",
+                        "line": 1,
+                        "issue": "Ping @alice and close #123",
+                        "evidence": "![pixel](https://example.test/pixel)",
+                    }
+                ]
+            }
+
+    review_run(state_dir, issue.run_id, Reviewer())
+    remote = FakeRemote()
+    publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    body = remote.pull["body"]
+    assert "@alice" not in body
+    assert "#123" not in body
+    assert "[run](" not in body
+    assert "![pixel](" not in body
+    assert "&#64;alice" in body
+    assert "&#35;123" in body
 
 
 @pytest.mark.parametrize(("change", "checks"), [(False, True), (True, False)])
