@@ -17,7 +17,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from .core import _acquire_run_lock, _registered_git_dir, git
-from .intake import IssueClaimStore
+from .intake import RUN_LABEL, IssueClaimStore
 from .review import _review_table, _stored_review
 from .state import RunStore
 from .validation import diff_sha256
@@ -59,6 +59,19 @@ class Publication:
     commit_sha: str
     pull_number: int
     pull_url: str
+
+
+def title_from_issue(issue_title: str) -> str:
+    """Render a concise conventional PR subject from a claimed issue title."""
+    summary = " ".join(issue_title.split())[:180]
+    if not summary:
+        raise ValueError("Claimed issue has no title")
+    if re.match(r"^(?:feat|fix|docs|refactor|perf|test|build|ci|chore): ", summary):
+        return summary
+    match = re.match(r"^(?:fix|repair|resolve)\s+(.+)$", summary, re.IGNORECASE)
+    if match:
+        return f"fix: {match.group(1)[0].lower()}{match.group(1)[1:]}"
+    return f"feat: {summary[0].lower()}{summary[1:]}"
 
 
 class PublicationRemote(Protocol):
@@ -107,6 +120,23 @@ class GitHubPublicationRemote:
     @staticmethod
     def _repo_path(issue: PublicationIssue) -> str:
         return f"/repos/{quote(issue.owner, safe='')}/{quote(issue.repository, safe='')}"
+
+    def issue_eligible(self, issue: PublicationIssue) -> bool:
+        """Check that the original issue still grants opt-in before a PR write."""
+        data = self._request("GET", f"{self._repo_path(issue)}/issues/{issue.issue_number}")
+        expected = (
+            f"https://github.com/{issue.owner}/{issue.repository}/issues/{issue.issue_number}"
+        )
+        if (
+            data["number"] != issue.issue_number
+            or data["html_url"].rstrip("/").casefold() != expected.casefold()
+        ):
+            raise ValueError("Issue identity changed before publication")
+        return (
+            data["state"] == "open"
+            and "pull_request" not in data
+            and any(label["name"] == RUN_LABEL for label in data["labels"])
+        )
 
     def verify_repository(self, issue: PublicationIssue, base_sha: str) -> str:
         scope = self._request("GET", "/installation/repositories?per_page=100")
@@ -349,7 +379,12 @@ def _verify_claim(state_dir: Path, issue: PublicationIssue) -> None:
 
 
 def publish_run(
-    *, state_dir: Path, issue: PublicationIssue, title: str, remote: PublicationRemote
+    *,
+    state_dir: Path,
+    issue: PublicationIssue,
+    title: str,
+    remote: PublicationRemote,
+    require_review: bool = False,
 ) -> Publication:
     """Publish or recover one validated run without creating a duplicate PR."""
     if (
@@ -383,6 +418,8 @@ def publish_run(
                 raise ValueError("Run has no validated implementation diff")
             _review_table(store)
             review = _stored_review(store, issue.run_id)
+            if require_review and review is None:
+                raise ValueError("Publication requires an advisory review of the validated diff")
             if review is not None and review["diff_sha256"] != validation["diff_sha256_after"]:
                 raise ValueError("Stored review does not match validated diff")
             worktree = Path(record["worktree"])
