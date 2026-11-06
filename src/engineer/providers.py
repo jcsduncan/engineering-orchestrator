@@ -46,6 +46,12 @@ class WorkerProvider(Protocol):
     def execute(self, prompt: str, worktree: Path, run_id: str) -> WorkerResult: ...
 
 
+class CheckRunner(Protocol):
+    def execute(
+        self, command: list[str], worktree: Path, run_id: str, timeout: int
+    ) -> WorkerResult: ...
+
+
 def plan_task(task: str, model: str, base_url: str, timeout: int = 120) -> Plan:
     """Ask an OpenAI-compatible server for a bounded, structured plan."""
     body = {

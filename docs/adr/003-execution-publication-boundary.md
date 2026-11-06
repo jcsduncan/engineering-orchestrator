@@ -12,4 +12,4 @@ Repository content and task text can influence worker commands. Separating execu
 
 ## Consequence
 
-A Git worktree provides file separation but does not satisfy the execution isolation requirement. The host worker requires trusted inputs; see [runtime](../runtime.md).
+A Git worktree provides file separation; the CLI executes worker and validation commands in disposable containers. Programmatic host execution requires trusted inputs; see [runtime](../runtime.md).

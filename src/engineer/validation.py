@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict
 
+from .providers import CheckRunner, WorkerResult
+
 
 class CheckResult(TypedDict):
     command: str
@@ -37,8 +39,17 @@ class UnsupportedDiffEntry(ValueError):
     """An untracked entry cannot be represented by the diff hash."""
 
 
-def _git_bytes(repo: Path, *args: str) -> bytes:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=True).stdout
+def _git_bytes(repo: Path, *args: str, git_dir: Path | None = None) -> bytes:
+    command = ["git", "-C", str(repo)]
+    if git_dir is not None:
+        command = [
+            "git",
+            f"--git-dir={git_dir}",
+            f"--work-tree={repo}",
+            "-c",
+            "core.fsmonitor=false",
+        ]
+    return subprocess.run([*command, *args], capture_output=True, check=True).stdout
 
 
 def _update_chunk(digest, value: bytes) -> None:
@@ -46,16 +57,18 @@ def _update_chunk(digest, value: bytes) -> None:
     digest.update(value)
 
 
-def diff_sha256(worktree: Path) -> str:
+def diff_sha256(worktree: Path, *, git_dir: Path | None = None) -> str:
     """Hash tracked worktree/index changes and untracked files without mutating Git state."""
     digest = hashlib.sha256()
     for args in (
         ("diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD"),
         ("diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD"),
     ):
-        _update_chunk(digest, _git_bytes(worktree, *args))
+        _update_chunk(digest, _git_bytes(worktree, *args, git_dir=git_dir))
 
-    paths = _git_bytes(worktree, "ls-files", "--others", "--exclude-standard", "-z")
+    paths = _git_bytes(
+        worktree, "ls-files", "--others", "--exclude-standard", "-z", git_dir=git_dir
+    )
     for raw_path in sorted(path for path in paths.split(b"\0") if path):
         path = worktree / os.fsdecode(raw_path)
         mode = path.lstat().st_mode
@@ -78,11 +91,17 @@ def validate_worktree(
     timeout: int,
     *,
     on_check: Callable[[CheckResult], None] | None = None,
+    runner: CheckRunner | None = None,
+    run_id: str = "",
+    git_guard: Callable[[], None] | None = None,
+    git_dir: Path | None = None,
 ) -> ValidationEvidence:
     """Run checks in order and bind their results to the final worktree diff."""
     results = []
     try:
-        before = diff_sha256(worktree)
+        if git_guard is not None:
+            git_guard()
+        before = diff_sha256(worktree, git_dir=git_dir)
     except UnsupportedDiffEntry as exc:
         return ValidationEvidence(results, None, None, "invalidated", str(exc))
     for check in checks:
@@ -92,19 +111,27 @@ def validate_worktree(
         started_at = datetime.now(UTC).isoformat()
         started = time.monotonic()
         try:
-            completed = subprocess.run(
-                argv,
-                check=False,
-                cwd=worktree,
-                capture_output=True,
-                text=True,
-                errors="replace",
-                timeout=timeout,
-            )
-            exit_code = completed.returncode
-            stdout = completed.stdout[-20000:]
-            stderr = completed.stderr[-20000:]
-            status = "passed" if exit_code == 0 else "failed"
+            if runner is None:
+                completed = subprocess.run(
+                    argv,
+                    check=False,
+                    cwd=worktree,
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                    timeout=timeout,
+                )
+                exit_code = completed.returncode
+                stdout = completed.stdout[-20000:]
+                stderr = completed.stderr[-20000:]
+            else:
+                outcome = runner.execute(argv, worktree, run_id, timeout)
+                if not isinstance(outcome, WorkerResult):
+                    raise ValueError("Check runner returned an invalid WorkerResult")
+                exit_code = outcome.exit_code
+                stdout = outcome.stdout[-20000:]
+                stderr = outcome.stderr[-20000:]
+            status = "passed" if exit_code == 0 else "timed_out" if exit_code is None else "failed"
         except subprocess.TimeoutExpired:
             exit_code = None
             stdout = ""
@@ -131,7 +158,9 @@ def validate_worktree(
         if status != "passed":
             break
     try:
-        after = diff_sha256(worktree)
+        if git_guard is not None:
+            git_guard()
+        after = diff_sha256(worktree, git_dir=git_dir)
     except UnsupportedDiffEntry as exc:
         return ValidationEvidence(results, before, None, "invalidated", str(exc))
     if before != after:

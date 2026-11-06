@@ -8,10 +8,15 @@ The CLI has two modes. Without `--worker`, it requests a structured plan from a 
 | `ENGINEER_BASE_URL` or `--base-url` | OpenAI-compatible API prefix | `http://127.0.0.1:11434/v1` |
 | `--repo` | Target Git repository | Current directory |
 | `--worker` | Command prefix; task prompt is appended as the last argument | Plan only |
+| `--image` | Local container image containing the worker and validation tools | Required with `--worker` |
 | `--check` | Validation command; pass a list for multiple checks | None |
 | `--state-dir` | SQLite database and worktree root | `~/.local/share/engineering-orchestrator` |
 | `--worker-timeout` | Worker deadline in seconds | 1800 |
 | `--run-id` | Stable run identity for safe resume | Generated |
+| `--container-cpus` | CPU limit | 2 |
+| `--container-memory-mb` | Memory limit in MiB | 2048 |
+| `--container-pids` | Process limit | 128 |
+| `--container-network` | `none` or `bridge` | `none` |
 
 The endpoint must implement `POST /chat/completions` and return assistant text containing JSON with `objective`, `steps`, `checks`, and `risks`. Each list contains strings. The controller truncates each list to five entries.
 
@@ -23,7 +28,7 @@ SQLite stores the task, base SHA, branch, worktree, plan, status, and result. Wo
 
 Each run starts with a persisted task snapshot, then moves through `accepted`, `planning`, `workspace_pending`, `executing`, and `validating`. The state database records each transition and checkpoints worker and check results. Repeating the same command with the same `--run-id` resumes from `accepted` or `workspace_pending`, or returns an already recorded result. If the prior process stopped during planning, execution, or validation, the controller records `needs_review` with available evidence and does not repeat the uncertain call. A run ID cannot be reused with different task or provider settings.
 
-The CLI invokes the worker on the host. Worktrees separate files but do not isolate processes, network access, or credentials. The CLI does not publish changes or create pull requests.
+The CLI resolves the local image to its immutable ID, then runs the worker and checks in disposable containers using that image. Each container mounts the run worktree read/write and pinned Git metadata read-only, with repository and worktree Git configs masked to hide remote credentials. It inherits no host environment variables or home directory and has no Docker socket. Its root filesystem is read-only, with a writable temporary filesystem. Docker applies CPU, memory, and process limits; the controller terminates a timed-out container. The controller rejects a changed worktree `.git` pointer before reading Git state on the host. `bridge` networking adds `host.docker.internal` for an explicitly configured model endpoint. The CLI does not publish changes or create pull requests. Programmatic host execution remains available for trusted integrations.
 
 ## Providers
 
