@@ -24,6 +24,7 @@ uv run --locked engineer "Fix the failing test" \
 
 The worker runs on the host in a new worktree. Use trusted repositories and worker commands. No model is bundled.
 The `--check` command runs in the target repository, so use that repository's test command.
+For multiple checks, pass a list such as `--check='["uv run --locked ruff check .", "uv run --locked pytest -q"]'`.
 
 ## Documentation
 

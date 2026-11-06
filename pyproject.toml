@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Local-model task controller for coding agents"
 requires-python = ">=3.11"
 license = "Apache-2.0"
+dependencies = [
+    "fire>=0.7.1",
+]
 
 [project.urls]
 Repository = "https://github.com/jcsduncan/engineering-orchestrator"
