@@ -24,7 +24,7 @@ def run(
     token = os.getenv("ENGINEER_GITHUB_TOKEN")
     if not token:
         raise SystemExit("Set ENGINEER_GITHUB_TOKEN to a GitHub App installation token")
-    repo = RepositoryConfig(int(installation_id), owner, repository)
+    repo = RepositoryConfig(int(installation_id), str(owner), str(repository))
     path = (
         Path(state_dir).expanduser()
         if state_dir

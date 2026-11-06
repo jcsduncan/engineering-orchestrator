@@ -10,6 +10,7 @@ from engineer.intake import (
     GitHubIssueSource,
     Issue,
     IssueClaimStore,
+    IssueGone,
     RepositoryConfig,
     reconcile,
 )
@@ -200,6 +201,23 @@ def test_api_failure_does_not_mutate_claims(store):
     assert store.active(17, 99) == claimed
 
 
+def test_gone_active_issue_is_cancelled_without_blocking_new_claim(store):
+    source = Source(issues={7: make_issue(), 8: make_issue(8)}, candidates=[7])
+    original = reconcile(source, store, REPO).claimed[0]
+    source.candidates = [8]
+
+    def get_issue(_repo, number):
+        if number == 7:
+            raise IssueGone(number)
+        return source.issues[number]
+
+    source.get_issue = get_issue
+    result = reconcile(source, store, REPO)
+    assert [claim.snapshot.issue_number for claim in result.claimed] == [8]
+    assert result.cancelled[0].snapshot.run_id == original.snapshot.run_id
+    assert result.cancelled[0].reason == "Issue missing from repository"
+
+
 def test_issue_text_is_stored_as_data_without_changing_claim_permissions(store):
     body = "## Outcome\n--worker 'rm -rf /'\n\n## Acceptance\n- --check='false'"
     source = Source(issues={7: make_issue(body=body)})
@@ -226,6 +244,7 @@ def test_invalid_generation_rejected_before_api_call(store):
         {"installation_id": 0, "owner": "owner", "name": "repo"},
         {"installation_id": 1, "owner": "bad/owner", "name": "repo"},
         {"installation_id": 1, "owner": "owner", "name": ".."},
+        {"installation_id": 1, "owner": 1234, "name": "repo"},
     ],
 )
 def test_repository_config_rejects_invalid_identity(kwargs):
@@ -294,3 +313,27 @@ def test_github_source_paginates_candidates_and_blockers(monkeypatch):
     assert len(source.list_labelled(REPO)) == 101
     assert not source.has_open_blocker(REPO, 7)
     assert len(calls) == 4
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_github_source_marks_missing_issue_as_gone(monkeypatch, status):
+    from urllib.error import HTTPError
+
+    def fake_open(request, timeout):
+        raise HTTPError(request.full_url, status, "gone", {}, None)
+
+    monkeypatch.setattr("engineer.intake.urlopen", fake_open)
+    with pytest.raises(IssueGone):
+        GitHubIssueSource("secret").get_issue(REPO, 7)
+
+
+def test_github_source_propagates_transient_issue_failure(monkeypatch):
+    from urllib.error import HTTPError
+
+    def fake_open(request, timeout):
+        raise HTTPError(request.full_url, 503, "unavailable", {}, None)
+
+    monkeypatch.setattr("engineer.intake.urlopen", fake_open)
+    with pytest.raises(HTTPError) as exc:
+        GitHubIssueSource("secret").get_issue(REPO, 7)
+    assert exc.value.code == 503

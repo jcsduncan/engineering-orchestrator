@@ -43,6 +43,15 @@ def test_fire_reconciles_and_prints_claims(monkeypatch, capsys, tmp_path):
     assert json.loads(capsys.readouterr().out) == {"claimed": [], "cancelled": []}
 
 
+def test_fire_accepts_numeric_owner_and_repository(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("ENGINEER_GITHUB_TOKEN", "secret")
+    monkeypatch.setattr(intake_cli, "GitHubIssueSource", lambda token: Source())
+    fire.Fire(intake_cli.run, command=["1234", "2048", "17", "--state-dir", str(tmp_path)])
+    snapshot = json.loads(capsys.readouterr().out)["claimed"][0]["snapshot"]
+    assert snapshot["owner"] == "1234"
+    assert snapshot["repository"] == "2048"
+
+
 def test_cli_requires_token(monkeypatch, tmp_path):
     monkeypatch.delenv("ENGINEER_GITHUB_TOKEN", raising=False)
     with pytest.raises(SystemExit, match="Set ENGINEER_GITHUB_TOKEN"):

@@ -10,6 +10,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
+from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
@@ -27,7 +28,7 @@ class RepositoryConfig:
         if type(self.installation_id) is not int or self.installation_id <= 0:
             raise ValueError("installation_id must be a positive integer")
         if any(
-            not _REPOSITORY_PART.fullmatch(part) or part in {".", ".."}
+            not isinstance(part, str) or not _REPOSITORY_PART.fullmatch(part) or part in {".", ".."}
             for part in (self.owner, self.name)
         ):
             raise ValueError("owner and repository name must be GitHub path components")
@@ -43,6 +44,10 @@ class Issue:
     url: str
     updated_at: str
     is_pull_request: bool = False
+
+
+class IssueGone(Exception):
+    """The issue no longer exists at its configured repository path."""
 
 
 @dataclass(frozen=True)
@@ -132,7 +137,12 @@ class GitHubIssueSource:
             page += 1
 
     def get_issue(self, repo: RepositoryConfig, number: int) -> Issue:
-        data = self._get(f"{self._path(repo)}/issues/{number}")
+        try:
+            data = self._get(f"{self._path(repo)}/issues/{number}")
+        except HTTPError as exc:
+            if exc.code in {404, 410}:
+                raise IssueGone(number) from exc
+            raise
         return Issue(
             number=data["number"],
             title=data["title"],
@@ -342,30 +352,38 @@ def reconcile(
     active = store.active(repo.installation_id, repository_id)
     candidates = {issue_number} if issue_number is not None else set(source.list_labelled(repo))
     numbers = sorted(candidates | {claim.snapshot.issue_number for claim in active})
-    current = {number: source.get_issue(repo, number) for number in numbers}
+    current: dict[int, Issue | None] = {}
+    for number in numbers:
+        try:
+            current[number] = source.get_issue(repo, number)
+        except IssueGone:
+            current[number] = None
     blockers = {
         number: source.has_open_blocker(repo, number)
         for number in sorted(candidates)
-        if current[number].state == "open"
+        if current[number] is not None
+        and current[number].state == "open"
         and RUN_LABEL in current[number].labels
         and not current[number].is_pull_request
     }
     for claim in active:
         issue = current[claim.snapshot.issue_number]
-        reason = (
-            "Issue closed"
-            if issue.state != "open"
-            else "agent:run label removed"
-            if RUN_LABEL not in issue.labels
-            else None
-        )
+        if issue is None:
+            reason = "Issue missing from repository"
+        elif issue.state != "open":
+            reason = "Issue closed"
+        elif RUN_LABEL not in issue.labels:
+            reason = "agent:run label removed"
+        else:
+            reason = None
         if reason:
             store.cancel(claim.snapshot.run_id, reason)
     claimed = []
     for number in sorted(candidates):
         issue = current[number]
         if (
-            issue.number != number
+            issue is None
+            or issue.number != number
             or issue.state != "open"
             or RUN_LABEL not in issue.labels
             or issue.is_pull_request
