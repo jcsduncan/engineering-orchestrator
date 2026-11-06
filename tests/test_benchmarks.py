@@ -117,9 +117,12 @@ def test_suite_scores_implementation_oracle(
         run_id: str,
         timeout: int,
         limit: int,
+        *,
+        readonly_worktree: bool = False,
     ) -> ContainerResult:
         assert self.image == "fixture-image"
         assert run_id == "negative_totals"
+        assert readonly_worktree is True
         completed = subprocess.run(argv, cwd=worktree, capture_output=True, text=True, check=False)
         return ContainerResult(completed.returncode, completed.stdout, completed.stderr)
 
