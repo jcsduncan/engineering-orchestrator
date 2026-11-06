@@ -99,6 +99,7 @@ def run_task(
     worker_timeout: int = 1800,
     check_timeout: int = 300,
 ) -> dict:
+    """Execute a task in a clean worktree and record worker and check outcomes."""
     if not worker:
         raise ValueError("A coding worker command is required")
     repo = Path(git(repo, "rev-parse", "--show-toplevel"))

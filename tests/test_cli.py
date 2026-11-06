@@ -1,9 +1,12 @@
 import json
+import sys
 from pathlib import Path
 
 import fire
+import pytest
 
 from engineer import cli
+from engineer.core import Plan
 
 
 def test_fire_accepts_checks_and_paths(monkeypatch, capsys, tmp_path):
@@ -39,3 +42,43 @@ def test_fire_accepts_checks_and_paths(monkeypatch, capsys, tmp_path):
     assert captured["checks"] == ["ruff check .", "pytest -q"]
     assert captured["worker_timeout"] == 60
     assert json.loads(capsys.readouterr().out) == {"status": "ready_for_review"}
+
+
+@pytest.mark.parametrize("check", [5, ["pytest -q", 5], {"command": "pytest -q"}, ("pytest -q",)])
+def test_cli_rejects_invalid_checks(check, monkeypatch):
+    monkeypatch.setattr(cli, "run_task", lambda **_kwargs: pytest.fail("worker must not run"))
+    with pytest.raises(SystemExit, match="^--check must be a command or a list of commands$"):
+        cli.run("Fix test", model="local-test", worker="qwen -p", check=check)
+
+
+def test_cli_prints_plan_without_worker(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli,
+        "plan_task",
+        lambda *_args: Plan("Inspect code", ["Read files"], ["Run tests"], []),
+    )
+    monkeypatch.setattr(cli, "run_task", lambda **_kwargs: pytest.fail("worker must not run"))
+
+    cli.run("Inspect code", model="local-test")
+
+    assert json.loads(capsys.readouterr().out) == {
+        "objective": "Inspect code",
+        "steps": ["Read files"],
+        "checks": ["Run tests"],
+        "risks": [],
+    }
+
+
+def test_cli_requires_model(monkeypatch):
+    monkeypatch.delenv("ENGINEER_MODEL", raising=False)
+    with pytest.raises(SystemExit, match="^Set --model or ENGINEER_MODEL$"):
+        cli.run("Inspect code")
+
+
+def test_cli_rejects_repeated_check_flags(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["engineer", "Fix test", "--check", "first", "--check=second"])
+    monkeypatch.setattr(
+        cli.fire, "Fire", lambda *_args, **_kwargs: pytest.fail("Fire must not run")
+    )
+    with pytest.raises(SystemExit, match="^Pass multiple checks as one list"):
+        cli.main()

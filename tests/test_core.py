@@ -57,10 +57,22 @@ def test_local_plan(planner_url):
 @pytest.mark.parametrize(
     ("content", "message"),
     [
-        ('{"objective": "", "steps": [], "checks": [], "risks": []}', "no objective"),
-        ('{"objective": "x", "steps": "not a list", "checks": [], "risks": []}', "steps"),
-        ('{"objective": "x", "steps": [], "checks": [1], "risks": []}', "checks"),
-        ('{"objective": "x", "steps": [], "checks": [], "risks": null}', "risks"),
+        (
+            '{"objective": "", "steps": [], "checks": [], "risks": []}',
+            "^Planner response has no objective$",
+        ),
+        (
+            '{"objective": "x", "steps": "not a list", "checks": [], "risks": []}',
+            "^Planner response has invalid steps$",
+        ),
+        (
+            '{"objective": "x", "steps": [], "checks": [1], "risks": []}',
+            "^Planner response has invalid checks$",
+        ),
+        (
+            '{"objective": "x", "steps": [], "checks": [], "risks": null}',
+            "^Planner response has invalid risks$",
+        ),
     ],
 )
 def test_plan_rejects_invalid_response(monkeypatch, content, message):

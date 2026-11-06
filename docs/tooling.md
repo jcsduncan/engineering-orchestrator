@@ -2,7 +2,7 @@
 
 | Tool | Repository configuration | Account setup |
 | --- | --- | --- |
-| GitHub Actions | CI runs lint, tests with an 80% coverage floor, package build, and docs build. | None |
+| GitHub Actions | CI runs lint, tests with an 80% coverage floor, package and container builds, and docs build. | None |
 | Main branch ruleset | Changes use a PR with checks passing against current main; review threads must be resolved. | None |
 | CODEOWNERS | Requests review from the repository owner on contributed changes. | None |
 | Ruff and pre-commit | `uv run --locked pre-commit run --all-files` | None |
@@ -25,6 +25,6 @@ Local checks:
 uv sync --locked --dev
 uv run --locked ruff check .
 uv run --locked ruff format --check .
-uv run --locked pytest -q
+uv run --locked pytest -q --cov-fail-under=80
 uv run --locked mkdocs build --strict
 ```

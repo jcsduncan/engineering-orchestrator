@@ -1,6 +1,6 @@
 # Engineering Orchestrator
 
-Engineering tasks pass through local planning, a coding worker, and explicit validation. Each run has its own Git worktree and a recorded result.
+Without a worker, the CLI prints a plan from a local model. With a worker, it creates a Git worktree, runs the worker and validation commands, and records the result.
 
 - [System design](HLD.md)
 - [Runtime and configuration](runtime.md)

@@ -3,7 +3,7 @@
 - Support Python 3.11 and 3.14. Manage dependencies and commands with `uv`; commit `uv.lock` with dependency changes.
 - Use Ruff for formatting and linting. Keep functions focused, name side effects clearly, and type public function parameters and results.
 - Keep CLI parsing in `cli.py`. The controller in `core.py` owns state transitions, worktrees, validation, and recorded outcomes; model output is advisory.
-- Use pytest for tests. Test observable behavior and failure paths with local fixtures; do not require live models, GitHub credentials, or internet access. The test command enforces at least 80% total branch coverage.
+- Use pytest for tests. Test observable behavior and failure paths with local fixtures; do not require live models, GitHub credentials, or internet access. CI and the full pre-PR test command enforce at least 80% total branch coverage.
 - Keep runtime documentation accurate and concise. Use an ADR for a decision that changes system boundaries or constraints, not for routine implementation work.
 - Every PR uses a Conventional Commit title and states the behavior changed, checks run, and known limitations. CI must pass and a human reviews before merge.
 

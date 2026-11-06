@@ -27,13 +27,12 @@ jobs:
       - run: uv run --locked ruff format --check .
       - run: uv run --locked mkdocs build --strict
       - run: uv build
+      - run: docker build -t engineering-orchestrator:ci .
+      - run: docker run --rm engineering-orchestrator:ci --help
 
   test:
     name: test (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -46,10 +45,31 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked --dev
-      - run: uv run --locked pytest -q --cov-report=xml
-      - uses: codecov/codecov-action@f9fe539f5290016afa014f8ef31597d3a61c2dea # v7
+      - run: uv run --locked pytest -q --cov-fail-under=80 --cov-report=xml
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: matrix.python == '3.11'
         with:
-          files: coverage.xml
+          name: coverage-py311
+          path: coverage.xml
+          if-no-files-found: error
+
+  coverage:
+    needs: test
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: coverage-py311
+          path: coverage
+      - uses: codecov/codecov-action@f9fe539f5290016afa014f8ef31597d3a61c2dea # v7
+        with:
+          files: coverage/coverage.xml
           use_oidc: true
           fail_ci_if_error: false

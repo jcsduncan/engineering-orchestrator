@@ -36,7 +36,7 @@ For multiple checks, pass a list such as `--check='["uv run --locked ruff check 
 ## Test
 
 ```bash
-uv run --locked pytest -q
+uv run --locked pytest -q --cov-fail-under=80
 ```
 
 Licensed under [Apache-2.0](LICENSE).

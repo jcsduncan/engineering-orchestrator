@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import sys
 from pathlib import Path
 
 import fire
@@ -29,7 +30,14 @@ def run(
         raise SystemExit("Set --model or ENGINEER_MODEL")
     base_url = base_url or os.getenv("ENGINEER_BASE_URL", "http://127.0.0.1:11434/v1")
     if worker:
-        checks = [check] if isinstance(check, str) else (check or [])
+        if check is None:
+            checks = []
+        elif isinstance(check, str):
+            checks = [check]
+        elif isinstance(check, list) and all(isinstance(item, str) for item in check):
+            checks = check
+        else:
+            raise SystemExit("--check must be a command or a list of commands")
         result = run_task(
             task=task,
             repo=Path(repo) if repo else Path.cwd(),
@@ -48,6 +56,12 @@ def run(
 
 
 def main() -> None:
+    """Expose the task command without silently dropping repeated validation flags."""
+    check_flags = sum(
+        arg in {"--check", "-c"} or arg.startswith(("--check=", "-c=")) for arg in sys.argv[1:]
+    )
+    if check_flags > 1:
+        raise SystemExit('Pass multiple checks as one list: --check=\'["cmd1", "cmd2"]\'')
     fire.Fire(run, name="engineer")
 
 
