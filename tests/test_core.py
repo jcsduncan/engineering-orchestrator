@@ -17,6 +17,7 @@ from engineer.providers import (
     ProviderInfo,
     WorkerResult,
 )
+from engineer.reports import REPORT_PREFIX
 
 
 class PlannerHandler(BaseHTTPRequestHandler):
@@ -164,6 +165,7 @@ def test_run_records_worktree_and_checks(planner_url, tmp_path):
     assert (repo / "README.md").read_text() == "before\n"
     with sqlite3.connect(tmp_path / "state/runs.sqlite3") as db:
         assert db.execute("SELECT status FROM runs").fetchone()[0] == "ready_for_review"
+        assert db.execute("SELECT mode FROM runs").fetchone()[0] == "implementation"
         providers = json.loads(db.execute("SELECT providers_json FROM runs").fetchone()[0])
         stored = json.loads(db.execute("SELECT result_json FROM runs").fetchone()[0])
     assert providers == result["providers"]
@@ -374,6 +376,256 @@ def test_provider_metadata_omits_credentials():
     metadata = json.dumps({"planner": planner.info.__dict__, "worker": worker.info.__dict__})
     assert "secret" not in metadata
     assert planner.info.configuration["endpoint"] == "http://localhost:11434"
+
+
+def investigation_worker(report, exit_code=0, change=False):
+    class Worker:
+        info = ProviderInfo("test", {})
+
+        def execute(self, prompt, worktree, _run_id):
+            assert "Investigate this task without changing files" in prompt
+            if change:
+                (worktree / "README.md").write_text("changed\n")
+            output = "diagnostic output\n" + REPORT_PREFIX + json.dumps(report)
+            return WorkerResult(exit_code, output, "")
+
+    return Worker()
+
+
+class InvestigationPlanner:
+    info = ProviderInfo("test", {})
+
+    def plan(self, _task):
+        return Plan("Investigate", ["Inspect"], ["Check"], [])
+
+
+def report(outcome="substantiated"):
+    return {
+        "outcome": outcome,
+        "summary": (
+            "The evidence supports this finding" if outcome == "substantiated" else "Unknown"
+        ),
+        "findings": [{"claim": "A condition exists", "evidence": ["README.md:1"]}]
+        if outcome == "substantiated"
+        else [],
+        "commands": [{"argv": ["git", "status", "--short"], "result": "clean"}],
+        "uncertainty": [] if outcome == "substantiated" else ["Need production logs"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [("substantiated", "report_for_review"), ("inconclusive", "inconclusive")],
+)
+def test_investigation_records_report_without_diff(tmp_path, outcome, expected):
+    state_dir = tmp_path / "state"
+    result = execute_task(
+        task="Investigate",
+        repo=make_repo(tmp_path),
+        planner=InvestigationPlanner(),
+        worker=investigation_worker(report(outcome)),
+        checks=[f"{sys.executable} -c 'print(1)'"],
+        state_dir=state_dir,
+        mode="investigation",
+    )
+    assert result["status"] == expected
+    assert result["mode"] == "investigation"
+    assert result["report"] == report(outcome)
+    assert result["changed_files"] == []
+    assert result["validation"]["status"] == "passed"
+    with sqlite3.connect(state_dir / "runs.sqlite3") as db:
+        stored_mode, stored_status, stored_json = db.execute(
+            "SELECT mode, status, result_json FROM runs"
+        ).fetchone()
+    assert (stored_mode, stored_status) == ("investigation", expected)
+    assert json.loads(stored_json)["report"] == result["report"]
+
+
+def test_investigation_replay_preserves_mode_and_rejects_mode_change(tmp_path):
+    repo = make_repo(tmp_path)
+    state_dir = tmp_path / "state"
+    worker = investigation_worker(report())
+    kwargs = {
+        "task": "Investigate",
+        "repo": repo,
+        "planner": InvestigationPlanner(),
+        "worker": worker,
+        "checks": [],
+        "state_dir": state_dir,
+        "run_id": "investigation-1",
+    }
+    first = execute_task(**kwargs, mode="investigation")
+    assert execute_task(**kwargs, mode="investigation") == first
+    with pytest.raises(ValueError, match="Run ID belongs to a different task or configuration"):
+        execute_task(**kwargs, mode="implementation")
+
+
+def test_implementation_request_keeps_legacy_digest_shape(tmp_path):
+    class Worker:
+        info = ProviderInfo("test", {})
+
+        def execute(self, _prompt, _worktree, _run_id):
+            return WorkerResult(0, "No change", "")
+
+    repo = make_repo(tmp_path)
+    state_dir = tmp_path / "state"
+    kwargs = {
+        "task": "Inspect",
+        "repo": repo,
+        "planner": InvestigationPlanner(),
+        "worker": Worker(),
+        "checks": [],
+        "state_dir": state_dir,
+        "run_id": "legacy-implementation",
+    }
+    first = execute_task(**kwargs)
+    with sqlite3.connect(state_dir / "runs.sqlite3") as db:
+        snapshot = json.loads(db.execute("SELECT snapshot_json FROM runs").fetchone()[0])
+    assert "mode" not in snapshot
+    assert execute_task(**kwargs) == first
+
+
+@pytest.mark.parametrize(
+    ("worker_report", "exit_code", "change", "reason"),
+    [
+        ({"outcome": "substantiated"}, 0, False, "needs a summary"),
+        (report(), 1, False, "Worker did not exit successfully"),
+        (report(), 0, True, "Investigation changed the worktree"),
+        ({**report(), "findings": []}, 0, False, "needs an evidenced finding"),
+        ({**report("inconclusive"), "uncertainty": []}, 0, False, "needs an uncertainty"),
+    ],
+)
+def test_investigation_failure_keeps_evidence(tmp_path, worker_report, exit_code, change, reason):
+    result = execute_task(
+        task="Investigate",
+        repo=make_repo(tmp_path),
+        planner=InvestigationPlanner(),
+        worker=investigation_worker(worker_report, exit_code, change),
+        checks=[],
+        state_dir=tmp_path / "state",
+        mode="investigation",
+    )
+    assert result["status"] == "failed"
+    assert reason in result["failure_reason"]
+    assert result["worker"]["stdout"].startswith("diagnostic output")
+    assert result["validation"]["status"] == "not_run"
+
+
+def test_investigation_keeps_first_failure_reason(tmp_path):
+    result = execute_task(
+        task="Investigate",
+        repo=make_repo(tmp_path),
+        planner=InvestigationPlanner(),
+        worker=investigation_worker(report(), exit_code=1, change=True),
+        checks=[],
+        state_dir=tmp_path / "state",
+        mode="investigation",
+    )
+    assert result["failure_reason"] == "Worker did not exit successfully"
+    assert result["changed_files"] == ["M README.md"]
+
+
+def test_investigation_rejects_untracked_file_when_git_hides_it(tmp_path):
+    repo = make_repo(tmp_path)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "status.showUntrackedFiles", "no"], check=True
+    )
+
+    class Worker:
+        info = ProviderInfo("test", {})
+
+        def execute(self, _prompt, worktree, _run_id):
+            (worktree / "new.txt").write_text("untracked\n")
+            return WorkerResult(0, REPORT_PREFIX + json.dumps(report()), "")
+
+    result = execute_task(
+        task="Investigate",
+        repo=repo,
+        planner=InvestigationPlanner(),
+        worker=Worker(),
+        checks=[],
+        state_dir=tmp_path / "state",
+        mode="investigation",
+    )
+    assert result["status"] == "failed"
+    assert result["failure_reason"] == "Investigation changed the worktree"
+    assert result["changed_files"] == ["?? new.txt"]
+
+
+def test_investigation_failed_check_keeps_report_and_check_evidence(tmp_path):
+    result = execute_task(
+        task="Investigate",
+        repo=make_repo(tmp_path),
+        planner=InvestigationPlanner(),
+        worker=investigation_worker(report()),
+        checks=[f"{sys.executable} -c 'raise SystemExit(2)'"],
+        state_dir=tmp_path / "state",
+        mode="investigation",
+    )
+    assert result["status"] == "failed"
+    assert result["report"] == report()
+    assert result["checks"][0]["exit_code"] == 2
+    assert result["validation"]["status"] == "failed"
+    assert result["failure_reason"] == "Validation failed: check failed"
+
+
+def test_investigation_missing_report_is_failed(tmp_path):
+    class Worker:
+        info = ProviderInfo("test", {})
+
+        def execute(self, _prompt, _worktree, _run_id):
+            return WorkerResult(0, "No report", "")
+
+    result = execute_task(
+        task="Investigate",
+        repo=make_repo(tmp_path),
+        planner=InvestigationPlanner(),
+        worker=Worker(),
+        checks=[],
+        state_dir=tmp_path / "state",
+        mode="investigation",
+    )
+    assert result["status"] == "failed"
+    assert result["failure_reason"] == "Worker did not provide an investigation report"
+
+
+def test_investigation_malformed_json_is_failed(tmp_path):
+    class Worker:
+        info = ProviderInfo("test", {})
+
+        def execute(self, _prompt, _worktree, _run_id):
+            return WorkerResult(0, REPORT_PREFIX + "{invalid", "")
+
+    result = execute_task(
+        task="Investigate",
+        repo=make_repo(tmp_path),
+        planner=InvestigationPlanner(),
+        worker=Worker(),
+        checks=[],
+        state_dir=tmp_path / "state",
+        mode="investigation",
+    )
+    assert result["status"] == "failed"
+    assert result["failure_reason"] == "Investigation report is not valid JSON"
+
+
+def test_empty_implementation_run_is_not_reviewable(tmp_path):
+    class Worker:
+        info = ProviderInfo("test", {})
+
+        def execute(self, _prompt, _worktree, _run_id):
+            return WorkerResult(0, "Done", "")
+
+    result = execute_task(
+        task="Do something",
+        repo=make_repo(tmp_path),
+        planner=InvestigationPlanner(),
+        worker=Worker(),
+        checks=[f"{sys.executable} -c 'print(1)'"],
+        state_dir=tmp_path / "state",
+    )
+    assert result["status"] == "needs_review"
+    assert result["changed_files"] == []
 
 
 def test_provider_timeout_errors(monkeypatch, tmp_path):

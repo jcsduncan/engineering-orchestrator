@@ -22,6 +22,7 @@ from .providers import (
     WorkerResult,
     plan_task,
 )
+from .reports import REPORT_PREFIX, parse_investigation_report
 from .state import ACTIVE_STATES, FINAL_STATES, RunStore
 from .validation import CheckResult, validate_worktree
 
@@ -158,6 +159,7 @@ def _interrupted_result(store: RunStore, record: dict) -> dict:
     result.update(
         {
             "id": record["id"],
+            "mode": record["mode"],
             "branch": record["branch"],
             "worktree": record["worktree"],
             "base_sha": record["base_sha"],
@@ -207,6 +209,7 @@ def run_task(
     container_memory_mb: int = 2048,
     container_pids: int = 128,
     container_network: str = "none",
+    mode: str = "implementation",
 ) -> dict:
     """Execute with the default planner and a host or container command worker."""
     if execution_image:
@@ -234,6 +237,7 @@ def run_task(
         check_timeout=check_timeout,
         run_id=run_id,
         check_runner=check_runner,
+        mode=mode,
     )
 
 
@@ -248,8 +252,11 @@ def execute_task(
     check_timeout: int = 300,
     run_id: str | None = None,
     check_runner: CheckRunner | None = None,
+    mode: str = "implementation",
 ) -> dict:
     """Execute or safely resume a task with independently selected providers."""
+    if not isinstance(mode, str) or mode not in {"implementation", "investigation"}:
+        raise ValueError("Mode must be implementation or investigation")
     repo = Path(git(repo, "rev-parse", "--show-toplevel"))
     state_dir = state_dir.expanduser().resolve()
     if type(check_timeout) is not int or check_timeout <= 0:
@@ -262,6 +269,8 @@ def execute_task(
         "checks": checks,
         "check_timeout": check_timeout,
     }
+    if mode != "implementation":
+        request["mode"] = mode
     request_digest = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
     run_id = _run_id(run_id)
     lock = _acquire_run_lock(state_dir, run_id)
@@ -286,6 +295,7 @@ def execute_task(
                 branch=branch,
                 worktree=worktree,
                 task=task,
+                mode=mode,
                 snapshot={**request, "request_digest": request_digest, "base_sha": base_sha},
                 providers=providers,
             )
@@ -313,7 +323,12 @@ def execute_task(
             store.transition(run_id, "accepted", "planning")
             record = store.get(run_id)
         if record["status"] == "planning":
-            plan = planner.plan(task)
+            planning_task = (
+                task
+                if mode == "implementation"
+                else f"Investigate without changing repository files. Task: {task}"
+            )
+            plan = planner.plan(planning_task)
             _validate_plan(plan)
             store.transition(run_id, "planning", "workspace_pending", plan=asdict(plan))
             record = store.get(run_id)
@@ -333,10 +348,26 @@ def execute_task(
         prompt = (
             f"Task:\n{task}\n\nPlan from the local controller (verify against code):\n"
             f"{json.dumps(asdict(plan), indent=2)}\n\n"
-            "Implement the task in this checkout. Run relevant tests. If the cause or "
-            "solution is uncertain, report that clearly; do not invent a fix. "
-            "Do not commit, push, or open a pull request."
         )
+        if mode == "investigation":
+            prompt += (
+                "Investigate this task without changing files. Run relevant diagnostic commands. "
+                "Finish with exactly one line beginning "
+                f"{REPORT_PREFIX} followed by a JSON object with: "
+                "outcome ('substantiated' or 'inconclusive'), summary (string), "
+                "findings (array of {claim: string, evidence: nonempty array of strings}), "
+                "commands (array of {argv: nonempty array of strings, result: string}), "
+                "and uncertainty (array of strings). Cite concrete file locations or command "
+                "results in evidence. If the cause cannot be established, use 'inconclusive' "
+                "and explain what evidence is missing. Report only commands you actually ran. "
+                "Do not commit, push, or open a pull request."
+            )
+        else:
+            prompt += (
+                "Implement the task in this checkout. Run relevant tests. If the cause or "
+                "solution is uncertain, report that clearly; do not invent a fix. "
+                "Do not commit, push, or open a pull request."
+            )
         outcome = worker.execute(prompt, worktree, run_id)
         if (
             not isinstance(outcome, WorkerResult)
@@ -347,6 +378,7 @@ def execute_task(
             raise ValueError("Worker provider returned an invalid WorkerResult")
         progress = {
             "id": run_id,
+            "mode": mode,
             "branch": branch,
             "worktree": str(worktree),
             "base_sha": base_sha,
@@ -378,13 +410,40 @@ def execute_task(
             "reason": validation.reason,
         }
         verify_git_pointer()
-        diff = git(worktree, "status", "--short", git_dir=git_dir)
+        status_args = ["status", "--short"]
+        if mode == "investigation":
+            status_args.append("--untracked-files=all")
+        diff = git(worktree, *status_args, git_dir=git_dir)
         result = {**progress, "changed_files": diff.splitlines()}
-        status = (
-            "ready_for_review"
-            if (outcome.exit_code == 0 and validation.status == "passed" and bool(diff))
-            else "needs_review"
-        )
+        if mode == "investigation":
+            report = None
+            failure_reason = None
+            if outcome.exit_code != 0:
+                failure_reason = "Worker did not exit successfully"
+            else:
+                try:
+                    report = parse_investigation_report(outcome.stdout)
+                except ValueError as exc:
+                    failure_reason = str(exc)
+            if failure_reason is None and diff:
+                failure_reason = "Investigation changed the worktree"
+            elif failure_reason is None and validation.status not in {"passed", "not_run"}:
+                detail = validation.reason or "check failed"
+                failure_reason = f"Validation {validation.status}: {detail}"
+            result["report"] = report
+            if failure_reason:
+                result["failure_reason"] = failure_reason
+                status = "failed"
+            elif report["outcome"] == "substantiated":
+                status = "report_for_review"
+            else:
+                status = "inconclusive"
+        else:
+            status = (
+                "ready_for_review"
+                if outcome.exit_code == 0 and validation.status == "passed" and diff
+                else "needs_review"
+            )
         result["status"] = status
         store.transition(run_id, "validating", status, result=result)
         return result

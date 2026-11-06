@@ -26,11 +26,14 @@ def run(
     container_memory_mb: int = 2048,
     container_pids: int = 128,
     container_network: str = "none",
+    mode: str = "implementation",
 ) -> None:
     """Plan a task locally, or execute it with a coding worker and validation commands.
 
     Pass multiple checks as a list, for example --check='["ruff check .", "pytest -q"]'.
     """
+    if not isinstance(mode, str) or mode not in {"implementation", "investigation"}:
+        raise SystemExit("--mode must be implementation or investigation")
     model = model or os.getenv("ENGINEER_MODEL")
     if not model:
         raise SystemExit("Set --model or ENGINEER_MODEL")
@@ -67,10 +70,16 @@ def run(
             container_memory_mb=container_memory_mb,
             container_pids=container_pids,
             container_network=container_network,
+            mode=mode,
         )
         print(json.dumps(result, indent=2))
     else:
-        print(json.dumps(plan_task(task, model, base_url).__dict__, indent=2))
+        planning_task = (
+            task
+            if mode == "implementation"
+            else f"Investigate without changing repository files. Task: {task}"
+        )
+        print(json.dumps(plan_task(planning_task, model, base_url).__dict__, indent=2))
 
 
 def main() -> None:
