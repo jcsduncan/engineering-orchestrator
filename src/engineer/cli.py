@@ -8,7 +8,11 @@ from pathlib import Path
 
 import fire
 
-from .core import plan_task, run_task
+from .core import cancel_run, plan_task, run_task, status_run
+
+
+def _state_dir(value: str | None) -> Path:
+    return Path(value) if value else Path.home() / ".local/share/engineering-orchestrator"
 
 
 def run(
@@ -27,6 +31,7 @@ def run(
     container_pids: int = 128,
     container_network: str = "none",
     mode: str = "implementation",
+    retry_of: str | None = None,
 ) -> None:
     """Plan a task locally, or execute it with a coding worker and validation commands.
 
@@ -40,6 +45,8 @@ def run(
     base_url = base_url or os.getenv("ENGINEER_BASE_URL", "http://127.0.0.1:11434/v1")
     if run_id is not None and not worker:
         raise SystemExit("--run-id requires --worker")
+    if retry_of is not None and not worker:
+        raise SystemExit("--retry-of requires --worker")
     if run_id is not None:
         run_id = str(run_id)
     if worker:
@@ -60,9 +67,7 @@ def run(
             base_url=base_url,
             worker=shlex.split(worker),
             checks=checks,
-            state_dir=Path(state_dir)
-            if state_dir
-            else Path.home() / ".local/share/engineering-orchestrator",
+            state_dir=_state_dir(state_dir),
             worker_timeout=worker_timeout,
             run_id=run_id,
             execution_image=image,
@@ -71,6 +76,7 @@ def run(
             container_pids=container_pids,
             container_network=container_network,
             mode=mode,
+            retry_of=retry_of,
         )
         print(json.dumps(result, indent=2))
     else:
@@ -82,6 +88,21 @@ def run(
         print(json.dumps(plan_task(planning_task, model, base_url).__dict__, indent=2))
 
 
+def status(run_id: str, state_dir: str | None = None) -> None:
+    """Show a run's status and available evidence."""
+    print(json.dumps(status_run(_state_dir(state_dir), str(run_id)), indent=2))
+
+
+def cancel(run_id: str, reason: str, state_dir: str | None = None) -> None:
+    """Stop an active run with a recorded reason."""
+    print(json.dumps(cancel_run(_state_dir(state_dir), str(run_id), str(reason)), indent=2))
+
+
+def retry(source_run_id: str, task: str, **options) -> None:
+    """Run a new generation of a failed or cancelled task."""
+    run(task, retry_of=str(source_run_id), **options)
+
+
 def main() -> None:
     """Expose the task command without silently dropping repeated validation flags."""
     check_flags = sum(
@@ -90,7 +111,10 @@ def main() -> None:
     )
     if check_flags > 1:
         raise SystemExit('Pass multiple checks as one list: --check=\'["cmd1", "cmd2"]\'')
-    fire.Fire(run, name="engineer")
+    if len(sys.argv) > 1 and sys.argv[1] in {"status", "cancel", "retry"}:
+        fire.Fire({"status": status, "cancel": cancel, "retry": retry}, name="engineer")
+    else:
+        fire.Fire(run, name="engineer")
 
 
 if __name__ == "__main__":

@@ -8,9 +8,11 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from .cancellation import RunCancelled
 from .providers import ProviderInfo, WorkerResult
 
 _REMOVAL_WAIT_SECONDS = 10
@@ -47,6 +49,7 @@ class ContainerRuntime:
     memory_mb: int = 2048
     pids: int = 128
     network: str = "none"
+    cancel_reason: Callable[[str], str | None] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -157,6 +160,8 @@ class ContainerRuntime:
             raise ValueError("Container timeout must be a positive integer")
         if type(output_limit) is not int or output_limit <= 0:
             raise ValueError("Container output limit must be a positive integer")
+        if self.cancel_reason is not None and (reason := self.cancel_reason(run_id)):
+            raise RunCancelled(reason)
         name = f"engineer-{run_id}-{uuid.uuid4().hex[:8]}"
         with tempfile.TemporaryDirectory(prefix="engineer-git-config-") as directory:
             safe_config = Path(directory) / "config"
@@ -182,10 +187,10 @@ class ContainerRuntime:
             if any(config.is_symlink() for config in worktree_configs):
                 raise ValueError("Git worktree config cannot be a symlink")
             command = self._command(argv, worktree, run_id, name, safe_config, worktree_configs)
-            return self._invoke(command, name, timeout, output_limit)
+            return self._invoke(command, name, run_id, timeout, output_limit)
 
     def _invoke(
-        self, command: list[str], name: str, timeout: int, output_limit: int
+        self, command: list[str], name: str, run_id: str, timeout: int, output_limit: int
     ) -> ContainerResult:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         assert process.stdout is not None and process.stderr is not None
@@ -201,13 +206,26 @@ class ContainerRuntime:
         for reader in readers:
             reader.start()
         timed_out = False
+        cancellation_reason = None
         cleanup_error = None
         try:
-            try:
-                exit_code = process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                exit_code = None
+            deadline = time.monotonic() + timeout
+            while True:
+                if self.cancel_reason is not None:
+                    cancellation_reason = self.cancel_reason(run_id)
+                    if cancellation_reason:
+                        exit_code = None
+                        break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    exit_code = None
+                    break
+                try:
+                    exit_code = process.wait(timeout=min(0.25, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
         finally:
             # Removing a named container kills its process tree even if the Docker CLI exits first.
             try:
@@ -248,6 +266,8 @@ class ContainerRuntime:
             raise RuntimeError("Could not confirm container removal") from cleanup_error
         stdout = out_tail.decode(errors="replace")
         stderr = err_tail.decode(errors="replace")
+        if cancellation_reason:
+            raise RunCancelled(cancellation_reason, stdout, stderr)
         if timed_out:
             stderr = (stderr + f"\nContainer timed out after {timeout} seconds")[-output_limit:]
         return ContainerResult(exit_code, stdout, stderr)

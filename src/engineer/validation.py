@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict
 
+from .cancellation import RunCancelled, run_cancellable_command
 from .providers import CheckRunner, WorkerResult
 
 
@@ -95,16 +96,21 @@ def validate_worktree(
     run_id: str = "",
     git_guard: Callable[[], None] | None = None,
     git_dir: Path | None = None,
+    cancel_reason: Callable[[str], str | None] | None = None,
 ) -> ValidationEvidence:
     """Run checks in order and bind their results to the final worktree diff."""
     results = []
     try:
+        if cancel_reason is not None and (reason := cancel_reason(run_id)):
+            raise RunCancelled(reason)
         if git_guard is not None:
             git_guard()
         before = diff_sha256(worktree, git_dir=git_dir)
     except UnsupportedDiffEntry as exc:
         return ValidationEvidence(results, None, None, "invalidated", str(exc))
     for check in checks:
+        if cancel_reason is not None and (reason := cancel_reason(run_id)):
+            raise RunCancelled(reason)
         argv = shlex.split(check)
         if not argv:
             raise ValueError("Empty check command")
@@ -112,18 +118,23 @@ def validate_worktree(
         started = time.monotonic()
         try:
             if runner is None:
-                completed = subprocess.run(
-                    argv,
-                    check=False,
-                    cwd=worktree,
-                    capture_output=True,
-                    text=True,
-                    errors="replace",
-                    timeout=timeout,
-                )
-                exit_code = completed.returncode
-                stdout = completed.stdout[-20000:]
-                stderr = completed.stderr[-20000:]
+                if cancel_reason is None:
+                    completed = subprocess.run(
+                        argv,
+                        check=False,
+                        cwd=worktree,
+                        capture_output=True,
+                        text=True,
+                        errors="replace",
+                        timeout=timeout,
+                    )
+                    exit_code = completed.returncode
+                    stdout = completed.stdout[-20000:]
+                    stderr = completed.stderr[-20000:]
+                else:
+                    exit_code, stdout, stderr = run_cancellable_command(
+                        argv, worktree, run_id, timeout, 20000, cancel_reason
+                    )
             else:
                 outcome = runner.execute(argv, worktree, run_id, timeout)
                 if not isinstance(outcome, WorkerResult):
@@ -132,6 +143,9 @@ def validate_worktree(
                 stdout = outcome.stdout[-20000:]
                 stderr = outcome.stderr[-20000:]
             status = "passed" if exit_code == 0 else "timed_out" if exit_code is None else "failed"
+        except RunCancelled as exc:
+            exc.command = check
+            raise
         except subprocess.TimeoutExpired:
             exit_code = None
             stdout = ""
@@ -158,6 +172,8 @@ def validate_worktree(
         if status != "passed":
             break
     try:
+        if cancel_reason is not None and (reason := cancel_reason(run_id)):
+            raise RunCancelled(reason)
         if git_guard is not None:
             git_guard()
         after = diff_sha256(worktree, git_dir=git_dir)
