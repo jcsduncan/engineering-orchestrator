@@ -167,7 +167,7 @@ def verify_signature(secret: bytes, body: bytes, signature: str | None) -> bool:
     if not secret or not signature:
         return False
     expected = "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
+    return hmac.compare_digest(expected.encode(), signature.encode("utf-8"))
 
 
 def accept_delivery(

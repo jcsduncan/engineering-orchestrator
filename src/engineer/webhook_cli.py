@@ -30,6 +30,8 @@ def make_handler(
     """Build an HTTP handler that only verifies and persists deliveries."""
 
     class Handler(BaseHTTPRequestHandler):
+        timeout = 10
+
         def do_POST(self) -> None:
             if self.path != "/webhooks/github":
                 self._reply(404, "Not found")

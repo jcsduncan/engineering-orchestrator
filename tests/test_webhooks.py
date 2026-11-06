@@ -88,6 +88,7 @@ def test_signature_matches_github_documented_vector():
     assert verify_signature(b"It's a Secret to Everybody", b"Hello, World!", signature)
     assert not verify_signature(b"wrong", b"Hello, World!", signature)
     assert not verify_signature(b"It's a Secret to Everybody", b"Hello, World!", None)
+    assert not verify_signature(b"It's a Secret to Everybody", b"Hello, World!", "sha256=é")
 
 
 def test_signed_delivery_is_persisted_before_any_issue_read(stores):
