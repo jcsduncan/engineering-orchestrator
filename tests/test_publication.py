@@ -217,6 +217,32 @@ def test_retry_after_push_timeout_reuses_local_commit(tmp_path):
     assert remote.creates == 1
 
 
+def test_retry_rejects_embedded_run_marker_without_footer(tmp_path):
+    result, issue, state_dir = make_run(tmp_path)
+    remote = FakeRemote()
+    remote.fail_push_once = True
+    with pytest.raises(TimeoutError, match="push timed out"):
+        publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            result["worktree"],
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "--amend",
+            "--no-verify",
+            "-m",
+            "feat: unrelated\n\nRun-ID: publication-1\n\nOther footer",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    with pytest.raises(ValueError, match="unrecognized commit"):
+        publish_run(state_dir=state_dir, issue=issue, title="feat: update README", remote=remote)
+
+
 def test_rejects_remote_branch_with_different_commit(tmp_path):
     _, issue, state_dir = make_run(tmp_path)
     remote = FakeRemote()

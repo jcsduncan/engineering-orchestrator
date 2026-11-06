@@ -389,7 +389,12 @@ def publish_run(
             else:
                 parent = git(worktree, "rev-parse", "HEAD^", git_dir=git_dir)
                 message = git(worktree, "log", "-1", "--format=%B", git_dir=git_dir)
-                if parent != record["base_sha"] or f"Run-ID: {issue.run_id}" not in message:
+                footer = f"Run-ID: {issue.run_id}"
+                if (
+                    parent != record["base_sha"]
+                    or not message.splitlines()
+                    or message.splitlines()[-1] != footer
+                ):
                     raise ValueError("Run branch contains an unrecognized commit")
             if git(worktree, "status", "--porcelain", "--untracked-files=all", git_dir=git_dir):
                 raise ValueError("Run worktree is dirty after publication commit")
