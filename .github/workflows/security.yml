@@ -66,6 +66,7 @@ jobs:
           format: sarif
           output: trivy-image.sarif
           severity: HIGH,CRITICAL
+          limit-severities-for-sarif: true
           exit-code: "0"
       - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
         if: ${{ always() && hashFiles('trivy-image.sarif') != '' }}
@@ -80,6 +81,7 @@ jobs:
           format: sarif
           output: trivy-dependencies.sarif
           severity: HIGH,CRITICAL
+          limit-severities-for-sarif: true
           exit-code: "0"
       - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
         if: ${{ always() && hashFiles('trivy-dependencies.sarif') != '' }}
