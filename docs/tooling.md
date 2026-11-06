@@ -10,7 +10,7 @@
 | Dependabot | Weekly uv, Actions, and Docker updates; Actions updates are grouped. PR titles use Conventional Commit prefixes. Only Python development dependency patch updates auto-merge after required checks pass. | None |
 | Codecov | CI uploads coverage using GitHub OIDC. | Connect this repository to Codecov. |
 | OpenSSF Scorecard | Weekly and main-branch scans publish SARIF. | None |
-| Release Please | Conventional Commit overrides in merged PR descriptions generate release PRs; merging a release PR creates its GitHub release. | GitHub Actions may create PRs. A maintainer approves workflows on each release PR, checks CI, then merges it. |
+| Release Please | A releasable change on main opens or updates a release PR. A repository-scoped GitHub App token lets CI run without manual approval and enables squash auto-merge after required checks; the merge publishes the GitHub release and GHCR image. | Install a GitHub App with Contents and Pull requests write access to this repository. Set `RELEASE_APP_CLIENT_ID` as a repository variable and `RELEASE_APP_PRIVATE_KEY` as a repository secret. Until configured, release PRs remain manual. |
 | MkDocs | CI builds docs; GitHub Pages publishes them. | Pages source must be GitHub Actions. |
 | GHCR | A release publishes the CLI image to `ghcr.io/jcsduncan/engineering-orchestrator`. | Image visibility is managed in GHCR. |
 | CodeRabbit | Reviews pull requests. | GitHub App installed for this repository. |

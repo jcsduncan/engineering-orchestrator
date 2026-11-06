@@ -15,3 +15,4 @@ nav:
       - Controller workflow: adr/002-controller-owned-workflow.md
       - Execution boundary: adr/003-execution-publication-boundary.md
       - Issue intake: adr/004-issue-intake.md
+      - Automatic releases: adr/005-automatic-releases.md
