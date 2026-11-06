@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from engineer.benchmarks import _fixture_repo, load_cases, run_suite, score_case
+
+
+def test_fixture_repository_is_reproducible(tmp_path: Path) -> None:
+    source = Path(__file__).parents[1] / "benchmarks/fixtures/negative_totals"
+    first = _fixture_repo(source, tmp_path / "first")
+    second = _fixture_repo(source, tmp_path / "second")
+    assert first == second
+    assert (
+        subprocess.check_output(
+            ["git", "-C", str(tmp_path / "first"), "status", "--porcelain"], text=True
+        )
+        == ""
+    )
+
+
+def test_manifest_rejects_duplicate_cases(tmp_path: Path) -> None:
+    manifest = tmp_path / "tasks.json"
+    case = {
+        "id": "duplicate",
+        "fixture": "fixture",
+        "task": "Fix this",
+        "mode": "implementation",
+        "oracle": ["python", "-c", "pass"],
+    }
+    manifest.write_text(json.dumps({"version": 1, "cases": [case, case]}))
+    with pytest.raises(ValueError, match="invalid identity"):
+        load_cases(manifest)
+
+
+def test_score_distinguishes_inconclusive_from_failure() -> None:
+    case = {"mode": "investigation", "required_findings": ["cache.py", "cache"]}
+    report = {
+        "status": "report_for_review",
+        "report": {"findings": [{"claim": "cache grows", "evidence": ["cache.py: _CACHE"]}]},
+    }
+    score = score_case(case, report, oracle_passed=None, latency_seconds=1.2)
+    assert score["correctness"] is True
+    assert score["validation_quality"] is True
+    assert score["cost_usd"] is None
+    assert (
+        score_case(case, {"status": "inconclusive"}, oracle_passed=None, latency_seconds=1)[
+            "outcome"
+        ]
+        == "inconclusive"
+    )
+    assert (
+        score_case(case, {"status": "failed"}, oracle_passed=None, latency_seconds=1)["outcome"]
+        == "failed"
+    )
+
+
+def test_suite_retains_artifacts_when_planner_unavailable(tmp_path: Path) -> None:
+    manifest = Path(__file__).parents[1] / "benchmarks/tasks.json"
+    output = tmp_path / "artifacts"
+    summary = run_suite(
+        manifest=manifest,
+        output_dir=output,
+        model="unavailable",
+        base_url="http://127.0.0.1:1/v1",
+        worker=["python", "-c"],
+    )
+    assert len(summary["cases"]) == 2
+    assert all(item["score"]["outcome"] == "failed" for item in summary["cases"])
+    assert (output / "summary.json").exists()
+    for case in ("negative_totals", "cache_growth"):
+        artifact = json.loads((output / case / "result.json").read_text())
+        assert artifact["fixture_sha256"]
+        assert artifact["base_sha"]
+        assert artifact["result"]["status"] == "failed"
+    with pytest.raises(ValueError, match="must be empty"):
+        run_suite(
+            manifest=manifest,
+            output_dir=output,
+            model="unavailable",
+            base_url="http://127.0.0.1:1/v1",
+            worker=["python", "-c"],
+        )
+
+
+def test_suite_scores_implementation_oracle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = Path(__file__).parents[1] / "benchmarks/tasks.json"
+
+    def fake_run_task(**kwargs: object) -> dict:
+        repo = kwargs["repo"]
+        assert isinstance(repo, Path)
+        worktree = repo.parent / "worker-tree"
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "-qb", "agent/test", str(worktree)],
+            check=True,
+        )
+        if kwargs["mode"] == "implementation":
+            (worktree / "ledger.py").write_text(
+                "def total(amounts: list[int]) -> int:\n    return sum(amounts)\n"
+            )
+            return {
+                "status": "ready_for_review",
+                "worktree": str(worktree),
+                "checks": [{"status": "passed"}],
+                "validation": {
+                    "status": "passed",
+                    "diff_sha256_before": "same",
+                    "diff_sha256_after": "same",
+                },
+            }
+        return {
+            "status": "report_for_review",
+            "report": {
+                "findings": [
+                    {"claim": "cache grows", "evidence": ["cache.py: _CACHE retains keys"]}
+                ]
+            },
+        }
+
+    monkeypatch.setattr("engineer.benchmarks.run_task", fake_run_task)
+    summary = run_suite(
+        manifest=manifest,
+        output_dir=tmp_path / "out",
+        model="fixture-model",
+        base_url="http://user:secret@127.0.0.1:11434/v1",
+        worker=["worker"],
+        interventions={"negative_totals": 0},
+        costs_usd={"negative_totals": 0.5},
+    )
+    assert all(case["score"]["correctness"] for case in summary["cases"])
+    assert summary["planner_origin"] == "http://127.0.0.1:11434"
+    assert summary["cases"][0]["score"]["cost_usd"] == 0.5
+    assert json.loads((tmp_path / "out/negative_totals/result.json").read_text())["oracle"][
+        "passed"
+    ]

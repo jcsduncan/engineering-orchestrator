@@ -14,6 +14,7 @@ Documentation = "https://jcsduncan.github.io/engineering-orchestrator/"
 
 [project.scripts]
 engineer = "engineer.cli:main"
+engineer-bench = "engineer.bench_cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

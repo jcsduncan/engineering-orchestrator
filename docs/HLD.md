@@ -63,6 +63,10 @@ Publication evidence records the merged SHA, CI or deployment run, target, smoke
 
 Human review controls merge. Automated review may find defects but cannot replace that gate.
 
+## Evaluation
+
+The [benchmark suite](benchmarks.md) runs bounded tasks against versioned fixture repositories. It retains the fixture digest, base commit, complete run evidence, an implementation oracle or investigation rubric, and measured latency. Intervention and cost are recorded when supplied; missing measurements stay unknown. Inconclusive reports are counted separately from failures.
+
 ## Trust boundary
 
 Task text, repository files, and model output are untrusted inputs. Code execution runs with bounded resources and without publication credentials. The controller uses a separate, scoped identity for repository writes. Execution and publication are distinct operations.
