@@ -92,3 +92,33 @@ ENGINEER_GITHUB_TOKEN_FILE=/run/secrets/github-installation-token \
 The receiver verifies `X-Hub-Signature-256` against the original request bytes, checks the installation and repository, and persists the `X-GitHub-Delivery` ID before returning `202`. It does not fetch issues or run a model in the HTTP handler. Payloads above 1 MiB are rejected. Duplicate delivery IDs are acknowledged once and do not create another task.
 
 A separate processor retries persisted deliveries after a crash or API failure. It fetches the current issue through the same `reconcile` operation used by `engineer-issues`; event action and issue text in the webhook are only hints. The server also scans all eligible issues every 300 seconds by default (`--scan-interval`) to recover missed webhooks. Claims and cancellations remain available through the `engineer-issues` command and the claim store. The token file is reread for each API request so an external GitHub App credential process can rotate its short-lived installation token. `ENGINEER_GITHUB_TOKEN` is accepted for a single token.
+
+## Claimed issue controller
+
+`engineer-controller` consumes claims from the same `state_dir` used by issue intake. Its configuration is a trusted local JSON file, separate from issue text:
+
+```json
+{
+  "version": 1,
+  "state_dir": "/srv/engineer/state",
+  "model": "local-planner",
+  "base_url": "http://127.0.0.1:11434/v1",
+  "worker": ["qwen", "-p"],
+  "image": "worker-image:local",
+  "max_running": 2,
+  "max_per_repository": 1,
+  "repositories": [
+    {
+      "installation_id": 123,
+      "repository_id": 456,
+      "owner": "owner",
+      "repository": "repo",
+      "path": "/srv/repos/repo",
+      "mode": "implementation",
+      "checks": ["uv run --locked pytest -q"]
+    }
+  ]
+}
+```
+
+Run `uv run --locked engineer-controller run /path/to/controller.json`. It repeats claim transfer and bounded dispatch; `--once` runs one pass. Repository IDs are GitHub's numeric IDs. The command accepts only claims matching a configured installation, repository ID, owner, and name. Worker argv, image, checks, and limits come from this file; issue text is task data. The controller stores queue results and finalizes claims after execution. Revoked claims stop active runs through the same cancellation path as operator requests. Interrupted runs retain their capacity reservation for operator inspection. After confirming an interrupted run's container has stopped, run `uv run --locked engineer-controller acknowledge /path/to/controller.json RUN_ID` to release its slot and finalize the claim. The command checks Docker's run label before releasing capacity. This command does not publish PRs.

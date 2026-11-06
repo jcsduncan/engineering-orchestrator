@@ -47,6 +47,8 @@ The polling interface returns claims until dispatch is acknowledged and cancella
 
 The controller verifies an active claim, queues its immutable snapshot, and acknowledges handoff in one SQLite transaction. Dispatch rechecks that issue-backed claims remain active. A SQLite transaction dispatches the oldest eligible run while enforcing global and per-repository limits. Independent repositories can run concurrently; a busy repository does not block another. A single controller lock prevents competing dispatch loops. After a restart, queued runs remain eligible. Interrupted runs need review and retain their capacity reservation until the controller confirms their process and container have stopped. Cancellation requests stay durable until the execution callback stops the run.
 
+Claim transfer and dispatch acknowledgement share one transaction. Dispatch rechecks that the claim remains active. The controller maps a configured repository identity to a trusted local checkout and invokes one worker runtime with the claim's stable run ID. It reconciles revoked claims during execution, then finalizes claim status from persisted queue results. A crash between these steps is handled by replaying the durable state; an interrupted run is never executed again automatically.
+
 ## Run contract
 
 Input: task identity, task text, repository, acceptance criteria, base commit, execution limits, and validation commands. Repeated delivery of the same task must resolve to the same run ID.
