@@ -45,7 +45,7 @@ The polling interface returns claims until dispatch is acknowledged and cancella
 
 ## Scheduling
 
-The controller queues each claimed run once by run ID. A SQLite transaction dispatches the oldest eligible run while enforcing global and per-repository limits. Independent repositories can run concurrently; a busy repository does not block another. A single controller lock prevents competing dispatch loops. After a restart, queued runs remain eligible. Interrupted runs need review and retain their capacity reservation until the controller confirms their process and container have stopped. Cancellation requests stay durable until the execution callback stops the run.
+The controller verifies an active claim, queues its immutable snapshot, and acknowledges handoff in one SQLite transaction. Dispatch rechecks that issue-backed claims remain active. A SQLite transaction dispatches the oldest eligible run while enforcing global and per-repository limits. Independent repositories can run concurrently; a busy repository does not block another. A single controller lock prevents competing dispatch loops. After a restart, queued runs remain eligible. Interrupted runs need review and retain their capacity reservation until the controller confirms their process and container have stopped. Cancellation requests stay durable until the execution callback stops the run.
 
 ## Run contract
 

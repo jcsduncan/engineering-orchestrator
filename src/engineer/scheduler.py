@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import sqlite3
 import time
 from collections.abc import Callable
@@ -49,6 +50,7 @@ class RunQueue:
                     snapshot_json TEXT NOT NULL,
                     status TEXT NOT NULL CHECK (status IN
                         ('queued', 'running', 'completed', 'failed', 'cancelled', 'needs_review')),
+                    claim_guarded INTEGER NOT NULL DEFAULT 0,
                     cancel_requested INTEGER NOT NULL DEFAULT 0,
                     cancel_reason TEXT,
                     resource_held INTEGER NOT NULL DEFAULT 0,
@@ -58,6 +60,11 @@ class RunQueue:
                     finished_at INTEGER
                 )"""
             )
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(scheduled_runs)")}
+            if "claim_guarded" not in columns:
+                self.db.execute(
+                    "ALTER TABLE scheduled_runs ADD COLUMN claim_guarded INTEGER NOT NULL DEFAULT 0"
+                )
             self.db.execute(
                 """CREATE INDEX IF NOT EXISTS scheduled_runs_ready
                 ON scheduled_runs (status, sequence)"""
@@ -93,6 +100,15 @@ class RunQueue:
         ).fetchall()
         return [self._decode(row) for row in rows]
 
+    def finalized(self) -> list[QueuedRun]:
+        """List terminal runs whose process reservation has been released."""
+        rows = self.db.execute(
+            """SELECT * FROM scheduled_runs WHERE status IN
+            ('completed', 'failed', 'cancelled', 'needs_review')
+            AND resource_held = 0 ORDER BY sequence"""
+        ).fetchall()
+        return [self._decode(row) for row in rows]
+
     def enqueue(self, claim: IssueClaim) -> QueuedRun:
         """Queue one immutable claim once, keeping retries as distinct generations."""
         if claim.status != "claimed":
@@ -115,6 +131,57 @@ class RunQueue:
                 raise ValueError("Run ID belongs to a different issue snapshot")
         return self._decode(row)
 
+    def accept_claim(self, claim: IssueClaim) -> QueuedRun:
+        """Atomically enqueue a persisted active claim and acknowledge its dispatch."""
+        if claim.status != "claimed":
+            raise ValueError("Only active issue claims can be accepted")
+        snapshot = claim.snapshot
+        repository_key = f"{snapshot.installation_id}:{snapshot.repository_id}"
+        encoded = json.dumps(asdict(snapshot), sort_keys=True)
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                persisted = self.db.execute(
+                    "SELECT status, snapshot_json FROM issue_claims WHERE run_id = ?",
+                    (snapshot.run_id,),
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                raise ValueError("Issue claim store is unavailable") from exc
+            if (
+                persisted is None
+                or persisted["status"] != "claimed"
+                or json.loads(persisted["snapshot_json"]) != asdict(snapshot)
+            ):
+                raise ValueError("Run has no matching active issue claim")
+            self.db.execute(
+                """INSERT INTO scheduled_runs
+                (run_id, repository_key, snapshot_json, status, claim_guarded, created_at)
+                VALUES (?, ?, ?, 'queued', 1, ?) ON CONFLICT (run_id) DO NOTHING""",
+                (snapshot.run_id, repository_key, encoded, int(time.time())),
+            )
+            row = self.db.execute(
+                "SELECT * FROM scheduled_runs WHERE run_id = ?", (snapshot.run_id,)
+            ).fetchone()
+            if row["repository_key"] != repository_key or row["snapshot_json"] != encoded:
+                raise ValueError("Run ID belongs to a different queue entry")
+            if not row["claim_guarded"]:
+                self.db.execute(
+                    "UPDATE scheduled_runs SET claim_guarded = 1 WHERE run_id = ?",
+                    (snapshot.run_id,),
+                )
+                row = self.db.execute(
+                    "SELECT * FROM scheduled_runs WHERE run_id = ?", (snapshot.run_id,)
+                ).fetchone()
+            now = int(time.time())
+            ack = self.db.execute(
+                """UPDATE issue_claims SET dispatch_ack_at = COALESCE(dispatch_ack_at, ?),
+                updated_at = ? WHERE run_id = ? AND status = 'claimed'""",
+                (now, now, snapshot.run_id),
+            )
+            if ack.rowcount != 1:
+                raise RuntimeError("Issue claim dispatch acknowledgement was not recorded")
+        return self._decode(row)
+
     def dispatch(self) -> QueuedRun | None:
         """Atomically claim the earliest queued run whose repository has capacity."""
         with self.db:
@@ -124,19 +191,40 @@ class RunQueue:
                 "WHERE resource_held = 1 GROUP BY repository_key"
             ).fetchall()
             occupancy = {row["repository_key"]: row["count"] for row in running}
-            if sum(occupancy.values()) >= self.max_running:
-                return None
             candidates = self.db.execute(
                 "SELECT * FROM scheduled_runs WHERE status = 'queued' ORDER BY sequence"
             ).fetchall()
-            row = next(
-                (
-                    item
-                    for item in candidates
-                    if occupancy.get(item["repository_key"], 0) < self.max_per_repository
-                ),
-                None,
-            )
+            row = None
+            for item in candidates:
+                if item["claim_guarded"]:
+                    claim = self.db.execute(
+                        "SELECT status, reason FROM issue_claims WHERE run_id = ?",
+                        (item["run_id"],),
+                    ).fetchone()
+                    if claim is None or claim["status"] != "claimed":
+                        reason = (
+                            claim["reason"]
+                            if claim is not None and claim["reason"]
+                            else "Issue claim revoked"
+                        )
+                        self.db.execute(
+                            """UPDATE scheduled_runs SET status = 'cancelled',
+                            cancel_requested = 1, cancel_reason = ?, result_json = ?,
+                            finished_at = ? WHERE run_id = ?""",
+                            (
+                                reason,
+                                json.dumps({"cancel_reason": reason}),
+                                int(time.time()),
+                                item["run_id"],
+                            ),
+                        )
+                        continue
+                if (
+                    row is None
+                    and sum(occupancy.values()) < self.max_running
+                    and occupancy.get(item["repository_key"], 0) < self.max_per_repository
+                ):
+                    row = item
             if row is None:
                 return None
             self.db.execute(
@@ -250,8 +338,15 @@ def run_queued(
     execute: Callable[[QueuedRun, Callable[[], bool]], dict],
     *,
     lock_path: Path,
+    poll_interval: float = 1.0,
 ) -> list[QueuedRun]:
     """Run queued tasks concurrently under one controller lock and persisted limits."""
+    if (
+        type(poll_interval) not in {int, float}
+        or not math.isfinite(poll_interval)
+        or poll_interval <= 0
+    ):
+        raise ValueError("poll_interval must be a positive finite number")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as lock:
         try:
@@ -273,7 +368,7 @@ def run_queued(
                     active[future] = item
                 if not active:
                     break
-                done, _ = wait(active, return_when=FIRST_COMPLETED)
+                done, _ = wait(active, timeout=poll_interval, return_when=FIRST_COMPLETED)
                 for future in done:
                     item = active.pop(future)
                     try:
