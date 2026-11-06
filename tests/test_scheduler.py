@@ -101,6 +101,7 @@ def test_runner_executes_independent_repositories_concurrently(tmp_path: Path) -
 
 
 def test_runner_polls_for_new_work_while_another_run_is_active(tmp_path: Path) -> None:
+    """A second repository can start before the first active run finishes."""
     path = tmp_path / "state.sqlite3"
     queue = RunQueue(path, max_running=2, max_per_repository=1)
     queue.enqueue(claim("first", 1, 1))
@@ -108,6 +109,7 @@ def test_runner_polls_for_new_work_while_another_run_is_active(tmp_path: Path) -
     second_started = threading.Event()
 
     def produce() -> None:
+        """Enqueue new work through a separate producer connection."""
         assert first_started.wait(2)
         other = RunQueue(path, max_running=2, max_per_repository=1)
         try:
@@ -119,6 +121,7 @@ def test_runner_polls_for_new_work_while_another_run_is_active(tmp_path: Path) -
     producer.start()
 
     def execute(item, should_cancel):
+        """Hold the first run until a newly queued run starts."""
         if item.run_id == "first":
             first_started.set()
             assert second_started.wait(2)
@@ -137,6 +140,7 @@ def test_runner_polls_for_new_work_while_another_run_is_active(tmp_path: Path) -
 
 
 def test_runner_rejects_invalid_poll_interval(tmp_path: Path) -> None:
+    """Reject a polling interval that would spin the scheduler."""
     queue = RunQueue(tmp_path / "state.sqlite3", max_running=1, max_per_repository=1)
     try:
         with pytest.raises(ValueError, match="poll_interval"):

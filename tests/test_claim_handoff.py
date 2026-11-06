@@ -14,6 +14,7 @@ from engineer.scheduler import RunQueue
 
 
 def claim(run_id: str, issue_number: int) -> IssueClaim:
+    """Build one immutable issue claim for local queue tests."""
     return IssueClaim(
         TaskSnapshot(
             run_id=run_id,
@@ -35,10 +36,12 @@ def claim(run_id: str, issue_number: int) -> IssueClaim:
 
 
 def stores(path: Path) -> tuple[IssueClaimStore, RunQueue]:
+    """Open both stores against the same SQLite database."""
     return IssueClaimStore(path), RunQueue(path, max_running=2, max_per_repository=2)
 
 
 def test_accept_claim_is_atomic_and_replay_safe(tmp_path: Path) -> None:
+    """Acknowledged claims replay without another queue entry or dispatch."""
     path = tmp_path / "runs.sqlite3"
     claims, queue = stores(path)
     try:
@@ -64,6 +67,7 @@ def test_accept_claim_is_atomic_and_replay_safe(tmp_path: Path) -> None:
 
 
 def test_simultaneous_handoffs_enqueue_once(tmp_path: Path) -> None:
+    """Concurrent deliveries converge on one persisted queue row."""
     path = tmp_path / "runs.sqlite3"
     claims = IssueClaimStore(path)
     item = claim("issue-one", 1)
@@ -72,6 +76,7 @@ def test_simultaneous_handoffs_enqueue_once(tmp_path: Path) -> None:
         barrier = Barrier(2)
 
         def accept() -> str:
+            """Accept through a separate queue connection."""
             queue = RunQueue(path, max_running=2, max_per_repository=2)
             try:
                 barrier.wait()
@@ -95,6 +100,7 @@ def test_simultaneous_handoffs_enqueue_once(tmp_path: Path) -> None:
 
 
 def test_failed_ack_rolls_back_enqueue_and_replays(tmp_path: Path) -> None:
+    """A failed acknowledgement leaves the claim pending and queue empty."""
     claims, queue = stores(tmp_path / "runs.sqlite3")
     try:
         item = claim("issue-one", 1)
@@ -116,6 +122,7 @@ def test_failed_ack_rolls_back_enqueue_and_replays(tmp_path: Path) -> None:
 
 
 def test_accept_recovers_existing_matching_queue_entry(tmp_path: Path) -> None:
+    """A queued row from an interrupted older handoff becomes guarded."""
     claims, queue = stores(tmp_path / "runs.sqlite3")
     try:
         item = claim("issue-one", 1)
@@ -133,6 +140,7 @@ def test_accept_recovers_existing_matching_queue_entry(tmp_path: Path) -> None:
 
 
 def test_accept_rejects_forged_or_revoked_snapshot(tmp_path: Path) -> None:
+    """Stale or altered claim objects cannot enter the queue."""
     claims, queue = stores(tmp_path / "runs.sqlite3")
     try:
         item = claim("issue-one", 1)
@@ -151,6 +159,7 @@ def test_accept_rejects_forged_or_revoked_snapshot(tmp_path: Path) -> None:
 
 
 def test_dispatch_cancels_revoked_claim_and_starts_next(tmp_path: Path) -> None:
+    """A revoked queue head is finalized while the next issue starts."""
     claims, queue = stores(tmp_path / "runs.sqlite3")
     try:
         first, second = claim("issue-one", 1), claim("issue-two", 2)
@@ -168,6 +177,7 @@ def test_dispatch_cancels_revoked_claim_and_starts_next(tmp_path: Path) -> None:
 
 
 def test_missing_guarded_claim_fails_closed(tmp_path: Path) -> None:
+    """A guarded row cannot dispatch after its claim disappears."""
     claims, queue = stores(tmp_path / "runs.sqlite3")
     try:
         item = claim("issue-one", 1)
@@ -183,6 +193,7 @@ def test_missing_guarded_claim_fails_closed(tmp_path: Path) -> None:
 
 
 def test_concurrent_cancel_and_accept_cannot_start_revoked_claim(tmp_path: Path) -> None:
+    """SQLite serializes handoff and revocation before dispatch."""
     path = tmp_path / "runs.sqlite3"
     claims, queue = stores(path)
     try:
@@ -191,6 +202,7 @@ def test_concurrent_cancel_and_accept_cannot_start_revoked_claim(tmp_path: Path)
         barrier = Barrier(2)
 
         def accept() -> bool:
+            """Race handoff against a claim revocation."""
             worker = RunQueue(path, max_running=2, max_per_repository=2)
             try:
                 barrier.wait()
@@ -203,6 +215,7 @@ def test_concurrent_cancel_and_accept_cannot_start_revoked_claim(tmp_path: Path)
                 worker.close()
 
         def cancel() -> None:
+            """Revoke through an independent claim store connection."""
             worker = IssueClaimStore(path)
             try:
                 barrier.wait()
@@ -226,6 +239,7 @@ def test_concurrent_cancel_and_accept_cannot_start_revoked_claim(tmp_path: Path)
 
 
 def test_finalized_excludes_interrupted_reservation_until_stopped(tmp_path: Path) -> None:
+    """Interrupted capacity stays reserved until orphan cleanup is confirmed."""
     queue = RunQueue(tmp_path / "runs.sqlite3", max_running=1, max_per_repository=1)
     try:
         item = claim("generic", 1)
@@ -242,6 +256,7 @@ def test_finalized_excludes_interrupted_reservation_until_stopped(tmp_path: Path
 def test_existing_queue_database_adds_claim_guard_without_changing_generic_rows(
     tmp_path: Path,
 ) -> None:
+    """Existing generic queue records remain dispatchable after migration."""
     path = tmp_path / "runs.sqlite3"
     with closing(connect(path)) as db, db:
         db.execute(
