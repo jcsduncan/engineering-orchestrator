@@ -134,6 +134,13 @@ def test_rerun_requires_new_generation_and_no_overlapping_claim(store):
     ]
 
 
+def test_targeted_reconcile_fetches_one_issue_without_scanning_list(store):
+    source = Source(candidates=[])
+    result = reconcile(source, store, REPO, issue_number=7)
+    assert len(result.claimed) == 1
+    assert source.fetched == [7]
+
+
 def test_cancellation_requires_acknowledgement_after_worker_stops(store):
     source = Source()
     claim = reconcile(source, store, REPO).claimed[0]

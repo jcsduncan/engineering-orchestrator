@@ -49,7 +49,7 @@ Each run records provider names and a sanitized configuration summary in `provid
 ENGINEER_GITHUB_TOKEN=... uv run --locked engineer-issues jcsduncan engineering-orchestrator 12345
 ```
 
-The token needs read access to repository issues and dependencies. The command prints newly claimed tasks and revoked claims as JSON. Schedule repeated passes outside the command. It fetches the repository ID, lists issues labelled `agent:run`, then fetches each issue and its blocking relationships again before claiming. Only open issues with no open blockers are claimed. Pull requests are excluded.
+The token needs read access to repository issues and dependencies. The command prints newly claimed tasks and revoked claims as JSON. Schedule repeated passes outside the command. It fetches the repository ID, lists issues labelled `agent:run`, then fetches each issue and its blocking relationships again before claiming. With `--issue-number`, it fetches that issue directly. Only open issues with no open blockers are claimed. Pull requests are excluded.
 
 Claims use the same SQLite database as runs. Each claim stores an immutable title, body, objective, acceptance criteria, issue URL, and update time. The unique key is installation ID, repository ID, issue number, and generation; the returned run ID is stable for that key. A repeated pass does not claim the issue again, even if its text changes. To claim a finished or cancelled issue again, specify both `--issue-number` and an increased `--generation`. An increased generation cannot trigger reruns of other issues in the repository.
 

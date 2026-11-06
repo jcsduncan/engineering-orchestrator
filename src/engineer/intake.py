@@ -340,9 +340,7 @@ def reconcile(
     if type(repository_id) is not int or repository_id <= 0:
         raise ValueError("GitHub returned an invalid repository ID")
     active = store.active(repo.installation_id, repository_id)
-    candidates = set(source.list_labelled(repo))
-    if issue_number is not None:
-        candidates.intersection_update({issue_number})
+    candidates = {issue_number} if issue_number is not None else set(source.list_labelled(repo))
     numbers = sorted(candidates | {claim.snapshot.issue_number for claim in active})
     current = {number: source.get_issue(repo, number) for number in numbers}
     blockers = {
