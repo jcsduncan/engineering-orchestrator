@@ -86,3 +86,5 @@ The [benchmark suite](benchmarks.md) runs bounded tasks against versioned fixtur
 ## Trust boundary
 
 Task text, repository files, and model output are untrusted inputs. Code execution runs with bounded resources and without publication credentials. The controller uses a separate, scoped identity for repository writes. Execution and publication are distinct operations.
+
+A worker may need a model credential. The controller mounts one private credential file into worker containers only, never into validation containers. The worker can read that credential; it receives no GitHub publication identity or host home directory.

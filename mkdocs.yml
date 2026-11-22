@@ -7,6 +7,7 @@ nav:
   - Home: index.md
   - High-level design: HLD.md
   - Runtime: runtime.md
+  - Claude Code worker: worker-claude.md
   - Scheduling: scheduler.md
   - Benchmarks: benchmarks.md
   - Tooling: tooling.md

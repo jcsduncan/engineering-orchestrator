@@ -81,6 +81,26 @@ def test_fire_accepts_numeric_run_id(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out) == {"status": "needs_review"}
 
 
+def test_cli_passes_worker_auth_file_without_reading_it(monkeypatch, capsys, tmp_path):
+    captured = {}
+
+    def fake_run_task(**kwargs):
+        captured.update(kwargs)
+        return {"status": "needs_review"}
+
+    monkeypatch.setattr(cli, "run_task", fake_run_task)
+    auth_file = tmp_path / "api-key"
+    cli.run(
+        "Fix test",
+        model="local-test",
+        worker="claude-worker",
+        image="claude-image",
+        worker_auth_file=str(auth_file),
+    )
+    assert captured["worker_auth_file"] == auth_file
+    assert json.loads(capsys.readouterr().out) == {"status": "needs_review"}
+
+
 def test_cli_loads_worker_profile_for_selected_mode(monkeypatch, capsys, tmp_path):
     captured = {}
 
